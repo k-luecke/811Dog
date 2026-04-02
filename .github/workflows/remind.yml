@@ -1,0 +1,65 @@
+name: Send Expiry Reminders
+
+on:
+  schedule:
+    # Daily at 8:00 AM Central Time (13:00 UTC CDT / 14:00 UTC CST)
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (preview to disk, no email sent)"
+        required: false
+        default: "true"
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  remind:
+    name: Send Reminder Emails
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASS: ${{ secrets.SMTP_PASS }}
+      REMINDER_TO: ${{ secrets.REMINDER_TO }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -e "apps/jobs"
+
+      - name: Ensure data directories exist
+        run: mkdir -p data/parsed/reminder_previews
+
+      - name: Send reminders
+        run: |
+          DRY_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_FLAG="--dry-run"
+          fi
+          python -m tn811.cli remind \
+            --config config/monitoring.yaml \
+            $DRY_FLAG
+
+      - name: Upload reminder previews (dry run)
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: reminder-preview-${{ github.run_id }}
+          path: data/parsed/reminder_previews/
+          retention-days: 7
+          if-no-files-found: ignore

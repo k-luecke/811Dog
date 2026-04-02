@@ -1,0 +1,70 @@
+name: Publish Dashboard to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/dashboard/**"
+      - "data/exports/**"
+      - ".github/workflows/publish.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one concurrent deployment at a time
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Dashboard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - name: Install Node dependencies
+        working-directory: apps/dashboard
+        run: npm ci
+
+      - name: Copy data exports into dashboard public dir
+        run: |
+          mkdir -p apps/dashboard/public/data/exports
+          cp data/exports/*.json apps/dashboard/public/data/exports/ 2>/dev/null || true
+
+      - name: Build dashboard
+        working-directory: apps/dashboard
+        env:
+          VITE_DATA_BASE: "/data/exports"
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/dashboard/dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

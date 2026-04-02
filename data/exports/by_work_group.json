@@ -1,0 +1,33 @@
+{
+  "generated_at": "2024-06-12T14:00:00+00:00",
+  "groups": [
+    {
+      "group": "ACME FIBER",
+      "probable_company": "ACME FIBER",
+      "total": 12,
+      "active": 8,
+      "counties": ["Davidson County"]
+    },
+    {
+      "group": "MID-TN TELECOM CONSTRUCTION",
+      "probable_company": "MID-TN TELECOM CONSTRUCTION",
+      "total": 9,
+      "active": 6,
+      "counties": ["Rutherford County", "Davidson County"]
+    },
+    {
+      "group": "NASHVILLE FIBER CREW",
+      "probable_company": "NASHVILLE FIBER CREW",
+      "total": 7,
+      "active": 5,
+      "counties": ["Davidson County"]
+    },
+    {
+      "group": "Unassigned",
+      "probable_company": null,
+      "total": 6,
+      "active": 2,
+      "counties": ["Davidson County", "Rutherford County"]
+    }
+  ]
+}

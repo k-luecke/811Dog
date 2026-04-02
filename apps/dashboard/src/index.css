@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Smooth table transitions */
+tbody tr {
+  @apply transition-colors duration-75;
+}
+
+/* Custom scrollbar for tables */
+.overflow-x-auto::-webkit-scrollbar {
+  height: 4px;
+}
+.overflow-x-auto::-webkit-scrollbar-track {
+  @apply bg-gray-100;
+}
+.overflow-x-auto::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-gray-300;
+}

@@ -1,0 +1,112 @@
+name: Scrape TN811 Portal
+
+on:
+  schedule:
+    # Twice daily: 6:00 AM and 6:00 PM Central Time
+    # CDT (UTC-5): 11:00 UTC and 23:00 UTC
+    # CST (UTC-6): 12:00 UTC and 00:00 UTC
+    # Using CDT times as the year-round schedule
+    - cron: "0 11 * * *"   # 6:00 AM CT
+    - cron: "0 23 * * *"   # 6:00 PM CT
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no writes)"
+        required: false
+        default: "false"
+        type: boolean
+      county:
+        description: "Specific county to scrape (leave blank for all)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write   # needed to commit updated DB and exports
+
+jobs:
+  scrape:
+    name: Scrape & Update
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      # SMTP secrets are only needed for remind.yml; not required here
+      SMTP_HOST: ""
+      SMTP_PORT: ""
+      SMTP_USER: ""
+      SMTP_PASS: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so we can commit back
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          pip install -e "apps/jobs[dev]"
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Ensure data directories exist
+        run: |
+          mkdir -p data/raw/html data/raw/pdf data/parsed data/exports
+
+      - name: Initialize database (idempotent)
+        run: |
+          python -m tn811.cli init-db --config config/monitoring.yaml
+
+      - name: Run scrape
+        run: |
+          DRY_FLAG=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            DRY_FLAG="--dry-run"
+          fi
+          COUNTY_FLAG=""
+          if [ -n "${{ github.event.inputs.county }}" ]; then
+            COUNTY_FLAG="--county '${{ github.event.inputs.county }}'"
+          fi
+          python -m tn811.cli scrape \
+            --config config/monitoring.yaml \
+            $DRY_FLAG \
+            $COUNTY_FLAG
+
+      - name: Build dashboard JSON
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          python -m tn811.cli build-json --config config/monitoring.yaml
+
+      - name: Commit updated data
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          git config user.name "tn811-monitor[bot]"
+          git config user.email "tn811-monitor@users.noreply.github.com"
+          git add data/exports/ data/tn811.db
+          # Only commit if there are changes
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: scrape update $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
+
+      - name: Upload raw artifacts (for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-raw-${{ github.run_id }}
+          path: |
+            data/raw/html/
+            data/parsed/
+            data/tn811-monitor.log
+          retention-days: 7
+          if-no-files-found: ignore
