@@ -1,0 +1,17 @@
+{
+  "generated_at": "2024-06-12T14:00:00+00:00",
+  "counties": [
+    {
+      "county": "Davidson County",
+      "total": 22,
+      "active": 14,
+      "expiring_soon": 3
+    },
+    {
+      "county": "Rutherford County",
+      "total": 12,
+      "active": 7,
+      "expiring_soon": 2
+    }
+  ]
+}

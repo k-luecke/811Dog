@@ -1,0 +1,29 @@
+{
+  "generated_at": "2024-06-12T14:00:00+00:00",
+  "count": 1,
+  "tickets": [
+    {
+      "ticket_number": "TN20240603-100003",
+      "county": "Davidson County",
+      "state": "TN",
+      "call_date": "2024-06-03",
+      "legal_start_date": "2024-06-05",
+      "expiration_date": "2024-06-26",
+      "excavator_name": "Nashville Fiber Crew",
+      "caller_name": "Jane Doe",
+      "work_type": "Fiber Optic Installation",
+      "location_text": "500 Church St, Nashville, TN",
+      "remarks": "GFiber underground boring - updated location",
+      "status": "active",
+      "is_cancelled": false,
+      "relevance_score": 0.92,
+      "relevance_reasons": ["+gfiber_exact(w=1.00)", "+fiber_optic_install(w=0.80)"],
+      "is_gfiber_related": true,
+      "probable_company": "NASHVILLE FIBER CREW",
+      "probable_work_group": "NASHVILLE FIBER CREW",
+      "probable_crew": null,
+      "parsed_at": "2024-06-12T14:00:00+00:00",
+      "updated_at": "2024-06-12T14:00:00+00:00"
+    }
+  ]
+}
