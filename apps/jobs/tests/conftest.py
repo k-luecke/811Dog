@@ -11,6 +11,12 @@ import pytest
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 HTML_DIR = FIXTURES_DIR / "html"
 PDF_DIR = FIXTURES_DIR / "pdf"
+CSV_DIR = FIXTURES_DIR / "csv"
+
+
+@pytest.fixture
+def search_results_csv() -> str:
+    return (CSV_DIR / "search_results_davidson.csv").read_text()
 
 
 @pytest.fixture

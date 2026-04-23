@@ -6,26 +6,23 @@ DESIGN CONTRACT:
     When the TN811 portal markup changes, this is the only file that needs updating.
 
 ADAPTATION PROCEDURE (when selectors break):
-    1. Visit https://tn811.com/ticket/search in a browser.
-    2. Run a test search for Davidson County.
+    1. Visit https://gcv3.tn811.com/geocall/portal?directaccess=find in a browser.
+    2. Run a test search for DAVIDSON county.
     3. Inspect the DOM with DevTools and update the constants below.
     4. Run: pytest tests/portal/ -v  to validate against HTML fixtures.
-    5. Update tests/fixtures/html/ with fresh portal HTML if needed.
-    6. Update docs/parser_assumptions.md with the new selector rationale.
+    5. Update tests/fixtures/ with fresh fixture data if needed.
 
-CURRENT ASSUMPTION (as of initial build):
-    The TN811 public portal is a server-rendered HTML form with:
-    - A county dropdown (<select>) identified by name/id
-    - A date-range input pair
-    - A results table with ticket rows
-    - Each ticket row links to a detail page
-    - Detail pages contain a PDF download link
-
-    These assumptions are encoded as an adapter interface. If the portal
-    uses a different mechanism (e.g., JavaScript-rendered SPA, AJAX endpoints),
-    update the SearchAdapter and DetailAdapter implementations in
-    portal/search.py and portal/detail.py accordingly — the selector constants
-    here would then contain API endpoint paths or JSON field names instead.
+CURRENT ASSUMPTION (as of v2):
+    The TN811 public portal is an ExtJS 4/5 single-page application:
+    - County selection uses an ExtJS combobox (NOT a native <select>).
+      Open it by clicking the arrow trigger; items appear in a boundlist overlay.
+    - Date fields are plain <input> elements (pre-filled with today on page load).
+    - Search results are rendered in an ExtJS grid (virtual DOM, no static <table>).
+    - The Export button triggers an immediate CSV download of all result rows.
+      This replaces paginated HTML-table scraping used in v1.
+    - Detail pages are plain HTML (not ExtJS) loaded via authenticated session cookie.
+      URL pattern: https://gcv3.tn811.com/geocall/client/item/ticket/{ticketId}?pr=true
+      The {ticketId} value comes from the export CSV's 'ticketId' column.
 """
 from __future__ import annotations
 
@@ -33,108 +30,48 @@ from __future__ import annotations
 # ── Search page ───────────────────────────────────────────────────────────────
 
 class SearchPage:
-    """Selectors for the ticket search/results page."""
+    """Selectors for the ExtJS ticket search page."""
 
-    # County dropdown — try multiple candidate selectors; first match wins
-    # Validation: ensure the selected option value matches the county portal_search_value
-    COUNTY_SELECT_CANDIDATES = [
-        "select[name='county']",
-        "select[id='county']",
-        "select[name='County']",
-        "#county-select",
-        "select.county-dropdown",
-    ]
+    # ExtJS combobox: click this arrow trigger to open the county dropdown
+    # XPath navigates from the county input up to its trigger-wrap ancestor,
+    # then down to the arrow trigger element.
+    COUNTY_TRIGGER_XPATH = (
+        "xpath=//input[@name='county']"
+        "/ancestor::table[contains(@class,'x-form-trigger-wrap')]"
+        "//div[contains(@class,'x-form-arrow-trigger')]"
+    )
 
-    # Date range inputs
-    # Assumption: the portal accepts MM/DD/YYYY format
-    DATE_FROM_CANDIDATES = [
-        "input[name='startDate']",
-        "input[name='start_date']",
-        "input[name='dateFrom']",
-        "input[id='startDate']",
-        "#date-from",
-    ]
-    DATE_TO_CANDIDATES = [
-        "input[name='endDate']",
-        "input[name='end_date']",
-        "input[name='dateTo']",
-        "input[id='endDate']",
-        "#date-to",
-    ]
+    # CSS for the floating boundlist items once the dropdown is open
+    COUNTY_BOUNDLIST_ITEM = ".x-boundlist-item"
 
-    # Search submit button
-    SUBMIT_CANDIDATES = [
-        "button[type='submit']",
-        "input[type='submit']",
-        "button:has-text('Search')",
-        "button:has-text('Submit')",
-        "#search-btn",
-    ]
+    # The hidden input that holds the selected county value (read-back check)
+    COUNTY_INPUT = "input[name='county']"
 
-    # Results container — the table or list of ticket rows
-    RESULTS_TABLE_CANDIDATES = [
-        "table.results",
-        "table#results",
-        "#ticket-results table",
-        ".ticket-list table",
-        "table",  # last-resort fallback
-    ]
+    # Date range inputs (pre-filled with today on page load)
+    DATE_FROM = "input[name='start-date']"
+    DATE_TO = "input[name='end-date']"
 
-    # Each result row in the results table (skip header row)
-    RESULT_ROW = "tbody tr"
+    # Form submit — the grid-search button, NOT the nav "Find Tickets" button.
+    # The nav button id (findTicketsButton-btnEl) is a different element.
+    SEARCH_BUTTON = "button:has-text('Search')"
 
-    # Within a result row:
-    # Ticket number link (also the detail page link)
-    ROW_TICKET_LINK = "a"
+    # Export button that triggers an immediate CSV download of all result rows
+    EXPORT_BUTTON = "button:has-text('Export')"
 
-    # Column indices (0-based) — update if column order changes
-    # These are used as fallback when cell data-attributes are absent
-    COL_TICKET_NUMBER = 0
-    COL_COUNTY = 1
-    COL_CALL_DATE = 2
-    COL_EXPIRATION_DATE = 3
-    COL_EXCAVATOR = 4
-    COL_WORK_TYPE = 5
-    COL_STATUS = 6
+    # ExtJS grid row selector — used only to confirm results loaded before export
+    GRID_ROW = "tr.x-grid-row"
 
-    # Pagination — next page link/button
-    NEXT_PAGE_CANDIDATES = [
-        "a[rel='next']",
-        "a:has-text('Next')",
-        ".pagination .next a",
-        "button:has-text('Next Page')",
-    ]
-
-    # "No results" indicator
-    NO_RESULTS_CANDIDATES = [
-        ".no-results",
-        "td:has-text('No tickets found')",
-        "td:has-text('No results')",
-        "p:has-text('No tickets')",
-    ]
+    # Pager text showing total result count (e.g. "Displaying 1 - 200 of 11494")
+    PAGER_TEXT = ".x-toolbar-text"
 
 
 class DetailPage:
-    """Selectors for the individual ticket detail page."""
+    """Selectors and constants for individual ticket detail pages."""
 
-    # Key-value pairs on the detail page
-    # Strategy: look for <th>Label</th><td>Value</td> patterns
-    # or definition lists <dt>Label</dt><dd>Value</dd>
-    DETAIL_TABLE_CANDIDATES = [
-        "table.ticket-detail",
-        "table#ticket-detail",
-        ".detail-table",
-        "table",
-    ]
-
-    # PDF download link
-    PDF_LINK_CANDIDATES = [
-        "a[href$='.pdf']",
-        "a:has-text('PDF')",
-        "a:has-text('Download')",
-        "a[href*='pdf']",
-        "a[href*='document']",
-    ]
+    # Direct URL template for a ticket detail page.
+    # ticketId comes from the CSV export column 'ticketId' (NOT the Number column).
+    # A valid session cookie (_nc) established by visiting the portal is required.
+    URL_TEMPLATE = "https://gcv3.tn811.com/geocall/client/item/ticket/{ticket_id}?pr=true"
 
     # Cancellation indicator
     CANCELLED_INDICATORS = [
@@ -144,10 +81,10 @@ class DetailPage:
         "td:has-text('CANCELLED')",
     ]
 
-    # Field label → canonical field name mapping
-    # Keys are normalized (lowercase, stripped) label text from the portal
-    # Values are NormalizedTicket field names
-    # Update this map when the portal's field labels change
+    # Field label → canonical field name mapping.
+    # Keys are normalized label text (lowercase, stripped, colon removed).
+    # The detail page uses 4-column rows: (label, value, label, value).
+    # Strategy 2 in parse_detail_html processes both pairs per row.
     LABEL_TO_FIELD: dict[str, str] = {
         "ticket number": "ticket_number",
         "ticket #": "ticket_number",
@@ -159,6 +96,7 @@ class DetailPage:
         "expiration": "expiration_date",
         "expiration date": "expiration_date",
         "expires": "expiration_date",
+        "good until": "expiration_date",
         "excavator": "excavator_name",
         "excavator name": "excavator_name",
         "excavating company": "excavator_name",
@@ -173,6 +111,7 @@ class DetailPage:
         "location": "location_text",
         "location description": "location_text",
         "street address": "location_text",
+        "work street address": "location_text",
         "remarks": "remarks",
         "comments": "remarks",
         "additional information": "remarks",
@@ -184,15 +123,6 @@ class DetailPage:
         "for company": "done_for",
     }
 
-    # Selectors for the utility response table (contains codes like GFI)
-    UTILITY_TABLE_CANDIDATES = [
-        "table.utility-table",
-        "table#utilities",
-        "table.utilities",
-        "#utility-responses table",
-        ".utility-list table",
-    ]
-
-    # Within utility rows: code column index (0-based)
+    # Utility response code column index within the utility table (0-based).
+    # The utility table is identified by its header containing "Code" in column 0.
     UTILITY_CODE_COL = 0
-    UTILITY_NAME_COL = 1

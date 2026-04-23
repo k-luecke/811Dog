@@ -58,7 +58,8 @@ async def browser_context(
                 "Mozilla/5.0 (compatible; TN811Monitor/1.0; "
                 "internal monitoring tool)"
             ),
-            viewport={"width": 1280, "height": 900},
+            viewport={"width": 1600, "height": 900},
+            accept_downloads=True,
         )
         ctx.set_default_timeout(portal_cfg.timeout_ms)
         try:

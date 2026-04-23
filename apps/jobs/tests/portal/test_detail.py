@@ -57,11 +57,6 @@ class TestParseDetailHtmlActive:
         remarks = record.fields.get("remarks") or ""
         assert "Northstar Fiber" in remarks or "fiber" in remarks.lower()
 
-    def test_pdf_url_discovered(self, detail_html_active: str):
-        record = parse_detail_html(detail_html_active, "TN20240601-100001", "Davidson County", BASE_URL)
-        assert record.pdf_url is not None
-        assert ".pdf" in record.pdf_url.lower()
-
     def test_done_for_extracted(self, detail_html_active: str):
         record = parse_detail_html(detail_html_active, "TN20240601-100001", "Davidson County", BASE_URL)
         assert record.fields.get("done_for") == "NORTHSTAR FIBER"
