@@ -99,9 +99,11 @@ def normalize_ticket(
     ))
     remarks = _clean_str(_best_str(
         detail.fields.get("remarks") if detail else None,
+        row.remarks_raw,
     ))
     done_for = _clean_str(_best_str(
         detail.fields.get("done_for") if detail else None,
+        row.work_done_for_raw,
     ))
 
     # ── Utilities ─────────────────────────────────────────────────────────────

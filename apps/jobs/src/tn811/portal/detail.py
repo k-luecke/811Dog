@@ -1,21 +1,20 @@
 """
 portal/detail.py — TN811 ticket detail page scraper.
 
-Fetches the detail page for a single ticket, saves raw HTML, extracts
-structured field values, discovers the PDF download URL, and marks
-cancellation status.
+Fetches the detail page for a single ticket, saves raw HTML, and extracts
+structured field values and utility response codes.
 
 SELECTOR BOUNDARY: All selectors come from portal.selectors.DetailPage.
 
 ASSUMPTION LOG:
-    The detail page is a server-rendered table of key-value pairs
-    (e.g., <th>Ticket Number</th><td>TN20240101-123456</td>).
-    Utility responses appear in a nested table or list.
-    There is exactly one PDF link per ticket.
+    The detail page is plain HTML (not ExtJS) served at:
+        DetailPage.URL_TEMPLATE.format(ticket_id=ticket_id)
+    A valid session cookie (_nc) must already be present in the BrowserContext.
+    That cookie is established automatically when the search page is visited.
 
-    If the detail page uses a different layout, update DetailPage selectors
-    and _parse_detail_html() in this file. Add a new HTML fixture to
-    tests/fixtures/html/ and update tests/portal/test_detail.py.
+    Page layout: multiple HTML tables with 4-column rows (label, value, label, value).
+    Utility response codes are in a dedicated table whose first header cell is "Code".
+    There are no PDF download links on the detail page.
 """
 from __future__ import annotations
 
@@ -45,10 +44,10 @@ class DetailRecord:
     # Raw field values keyed by canonical field name (from DetailPage.LABEL_TO_FIELD)
     fields: dict[str, str] = field(default_factory=dict)
 
-    # Utility response codes extracted from the utility table (e.g. ["GFI", "NES"])
+    # Utility response codes from the utility table (e.g. ["GFI", "NES"])
     utility_codes: list[str] = field(default_factory=list)
 
-    # PDF download URL discovered on the page (None if not found)
+    # Always None — detail pages no longer contain PDF links
     pdf_url: str | None = None
 
     # True if a cancellation indicator was found on the page
@@ -86,18 +85,19 @@ class DetailAdapter:
         Fetch and parse a ticket detail page.
 
         Args:
-            ctx:           Playwright BrowserContext.
+            ctx:           Playwright BrowserContext (must have valid session cookie).
             ticket_number: Ticket identifier (for snapshot naming).
             county:        County name.
             detail_url:    Full URL to the detail page.
 
         Returns:
-            DetailRecord with extracted fields and PDF URL.
+            DetailRecord with extracted fields and utility codes.
         """
         page: Page = await ctx.new_page()
         try:
             logger.info("Fetching detail page", extra={"ticket": ticket_number, "url": detail_url})
-            await navigate_with_retry(page, detail_url, self._cfg)
+            # Plain HTML page — domcontentloaded is sufficient and faster than networkidle
+            await navigate_with_retry(page, detail_url, self._cfg, wait_until="domcontentloaded")
 
             html = await page.content()
             snapshot_path = self._snapshot_path(ticket_number)
@@ -126,11 +126,13 @@ def parse_detail_html(
     This function is pure (no I/O) and tested against HTML fixtures.
 
     Parsing strategy:
-    1. Look for a <table> with key-value row pairs (th+td or two td columns).
-    2. Map label text to canonical field names using DetailPage.LABEL_TO_FIELD.
-    3. Discover the PDF link.
-    4. Check for cancellation indicators.
-    5. Capture full page text as raw_text fallback.
+    1. Look for <th>Label</th><td>Value</td> rows (legacy format compat).
+    2. Look for 4-column <td> rows: (label, value, label, value).
+       Falls back to 2-column (label, value) if only 2 TDs present.
+    3. Definition lists <dl><dt>Label</dt><dd>Value</dd></dl>.
+    4. Utility table: find the table whose first header cell is "Code";
+       extract the code from column 0 of each data row.
+    5. Cancellation: scan for "cancelled"/"canceled"/"void" in prominent elements.
     """
     soup = BeautifulSoup(html, "html.parser")
     record = DetailRecord(ticket_number=ticket_number, county=county)
@@ -150,13 +152,19 @@ def parse_detail_html(
             if canonical:
                 fields[canonical] = value
 
-    # Strategy 2: Two-column <td><td> tables (label | value)
+    # Strategy 2: td-only rows — 4-column (label,value,label,value) or 2-column
     if not fields:
         for row in soup.find_all("tr"):
             tds = row.find_all("td")
-            if len(tds) >= 2:
-                label = tds[0].get_text(strip=True).lower().rstrip(":")
-                value = tds[1].get_text(strip=True)
+            if len(tds) == 4:
+                pairs = [(tds[0], tds[1]), (tds[2], tds[3])]
+            elif len(tds) >= 2:
+                pairs = [(tds[0], tds[1])]
+            else:
+                continue
+            for label_td, value_td in pairs:
+                label = label_td.get_text(strip=True).lower().rstrip(":")
+                value = value_td.get_text(strip=True)
                 canonical = DetailPage.LABEL_TO_FIELD.get(label)
                 if canonical:
                     fields[canonical] = value
@@ -175,20 +183,11 @@ def parse_detail_html(
     # ── Utility codes (GFI etc.) from utility response table ────────────────
     record.utility_codes = _extract_utility_codes(soup)
 
-    # ── PDF link ────────────────────────────────────────────────────────────
-    for sel in DetailPage.PDF_LINK_CANDIDATES:
-        link = _find_pdf_link(soup, sel, base_url)
-        if link:
-            record.pdf_url = link
-            break
-
     # ── Cancellation ────────────────────────────────────────────────────────
     cancelled_text_signals = ["cancelled", "canceled", "void"]
     page_text_lower = record.raw_text.lower()
     for sig in cancelled_text_signals:
         if sig in page_text_lower:
-            # Confirm it's not just a mention in a field label
-            # Look for it in prominent positions
             for el in soup.find_all(["h1", "h2", "h3", "span", "div", "td"]):
                 if sig in el.get_text(strip=True).lower():
                     record.is_cancelled = True
@@ -201,81 +200,23 @@ def parse_detail_html(
         extra={
             "ticket": ticket_number,
             "fields_found": len(fields),
-            "pdf_url": record.pdf_url,
+            "utility_codes": record.utility_codes,
             "cancelled": record.is_cancelled,
         },
     )
     return record
 
 
-def _find_pdf_link(soup: BeautifulSoup, selector: str, base_url: str) -> str | None:
-    """
-    Find a PDF download link using a simplified selector.
-
-    Handles:
-    - a[href$='.pdf'] — links ending in .pdf
-    - a:has-text('PDF') — links with PDF text (BS4 approximation)
-    - a[href*='pdf'] — links containing 'pdf' in href
-    """
-    import re
-
-    # href$='.pdf'
-    m = re.match(r"a\[href\$='([^']+)'\]", selector)
-    if m:
-        suffix = m.group(1)
-        for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if href.lower().endswith(suffix.lower()):
-                return _resolve_url(href, base_url)
-
-    # href*='text'
-    m = re.match(r"a\[href\*='([^']+)'\]", selector)
-    if m:
-        fragment = m.group(1).lower()
-        for a in soup.find_all("a", href=True):
-            if fragment in a["href"].lower():
-                return _resolve_url(a["href"], base_url)
-
-    # :has-text('TEXT')
-    m = re.match(r"a:has-text\('([^']+)'\)", selector)
-    if m:
-        text = m.group(1).lower()
-        for a in soup.find_all("a"):
-            if text in a.get_text(strip=True).lower():
-                href = a.get("href", "")
-                if href:
-                    return _resolve_url(href, base_url)
-
-    # bare 'a' selector
-    if selector.strip() == "a":
-        a = soup.find("a", href=True)
-        if a:
-            return _resolve_url(a["href"], base_url)
-
-    return None
-
-
-def _resolve_url(href: str, base_url: str) -> str:
-    """Resolve a relative URL against the portal base URL."""
-    if href.startswith("http"):
-        return href
-    return base_url.rstrip("/") + "/" + href.lstrip("/")
-
-
 def _extract_utility_codes(soup: BeautifulSoup) -> list[str]:
     """
-    Extract utility response codes from the utility table on the detail page.
+    Extract utility response codes from the detail page.
 
-    Strategy 1: Find a dedicated utility table and grab the first column of
-                each body row (e.g. "GFI", "NES", "MLGW").
-    Strategy 2: Fall back to scanning <li> items in a utilities section.
-    Strategy 3: Regex scan the raw page text for short uppercase codes that
-                appear next to "utility" / "response" context.
+    The utility table is identified by its header row having "code" as the
+    first column header (case-insensitive). Codes are taken from column 0
+    of all subsequent data rows.
 
-    Returns a deduplicated list of uppercase code strings.
+    Falls back to regex scan of the raw page text if no such table is found.
     """
-    from tn811.portal.selectors import DetailPage
-
     codes: list[str] = []
     seen: set[str] = set()
 
@@ -285,16 +226,20 @@ def _extract_utility_codes(soup: BeautifulSoup) -> list[str]:
             codes.append(c)
             seen.add(c)
 
-    # Strategy 1: dedicated utility table
-    util_table = None
-    for sel in DetailPage.UTILITY_TABLE_CANDIDATES:
-        util_table = _find_soup_element(soup, sel)
-        if util_table is not None:
-            break
-
-    if util_table is not None:
-        tbody = util_table.find("tbody") or util_table
-        for tr in tbody.find_all("tr"):
+    # Strategy 1: table whose first header cell is "Code"
+    for table in soup.find_all("table"):
+        header_row = table.find("tr")
+        if not header_row:
+            continue
+        header_cells = header_row.find_all(["th", "td"])
+        if not header_cells:
+            continue
+        first_header = header_cells[0].get_text(strip=True).lower()
+        if first_header != "code":
+            continue
+        # This is the utility table — extract code from col 0 of each data row
+        all_rows = table.find_all("tr")
+        for tr in all_rows[1:]:  # skip header row
             cells = tr.find_all(["td", "th"])
             if cells:
                 code_text = cells[DetailPage.UTILITY_CODE_COL].get_text(strip=True)
@@ -303,26 +248,7 @@ def _extract_utility_codes(soup: BeautifulSoup) -> list[str]:
         if codes:
             return codes
 
-    # Strategy 2: <ul>/<ol> list inside a utilities section header
-    for heading in soup.find_all(["h2", "h3", "h4", "strong", "b"]):
-        if "utilit" in heading.get_text(strip=True).lower():
-            container = heading.find_next_sibling(["ul", "ol", "table"])
-            if container is None:
-                container = heading.find_next("ul") or heading.find_next("ol")
-            if container:
-                for item in container.find_all("li"):
-                    text = item.get_text(strip=True)
-                    # Grab a leading all-caps token as the code
-                    import re as _re
-                    m = _re.match(r"^([A-Z0-9]{2,10})\b", text)
-                    if m:
-                        _add(m.group(1))
-                    elif text:
-                        _add(text[:20])
-    if codes:
-        return codes
-
-    # Strategy 3: regex scan for short uppercase codes near utility keywords
+    # Strategy 2: regex scan for short uppercase codes near utility context
     import re as _re
     raw = soup.get_text(separator="\n")
     for m in _re.finditer(
@@ -333,30 +259,3 @@ def _extract_utility_codes(soup: BeautifulSoup) -> list[str]:
         _add(m.group(1))
 
     return codes
-
-
-def _find_soup_element(soup: BeautifulSoup, selector: str):
-    """Best-effort BS4 lookup for simple CSS selectors (mirrors search.py helper)."""
-    import re
-    selector = selector.strip()
-    m = re.match(r'^(\w+)#([\w-]+)$', selector)
-    if m:
-        return soup.find(m.group(1), id=m.group(2))
-    m = re.match(r'^(\w+)\.([\w-]+)$', selector)
-    if m:
-        return soup.find(m.group(1), class_=m.group(2))
-    m = re.match(r'^#([\w-]+)$', selector)
-    if m:
-        return soup.find(id=m.group(1))
-    m = re.match(r'^\.([\w-]+)$', selector)
-    if m:
-        return soup.find(class_=m.group(1))
-    parts = selector.rsplit(None, 1)
-    if len(parts) == 2:
-        container = _find_soup_element(soup, parts[0])
-        if container:
-            return _find_soup_element(container, parts[1])
-    m = re.match(r'^(\w+)$', selector)
-    if m:
-        return soup.find(m.group(1))
-    return None

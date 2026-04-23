@@ -162,6 +162,25 @@ async def _run_scrape(cfg, counties, dry_run: bool):
     )
 
 
+_GFIBER_SUBCONTRACTORS: frozenset[str] = frozenset({
+    "cui cable", "florida armstrong", "blue ocean", "dtob",
+    "civcom", "amzung", "cattail",
+})
+
+
+def _worth_detail_fetch(row) -> bool:
+    """Return True if this row is a plausible GFiber ticket worth fetching detail for."""
+    wdf = (row.work_done_for_raw or "").lower()
+    exc = (row.excavator_name_raw or "").lower()
+    wt = (row.work_type_raw or "").lower()
+    return (
+        "google" in wdf
+        or "gfiber" in wdf
+        or any(s in exc for s in _GFIBER_SUBCONTRACTORS)
+        or any(kw in wt for kw in ("fiber optic", "ftth", "fiber instl", "fiber bury"))
+    )
+
+
 async def _process_ticket_row(
     row, ctx, cfg, detail_adapter, matcher, dry_run, stats, now
 ):
@@ -169,9 +188,9 @@ async def _process_ticket_row(
     from tn811.models import ORMTicket, ORMTicketSnapshot, normalized_to_orm_dict
     from tn811.normalize.tickets import normalize_ticket
 
-    # Fetch detail page
+    # Fetch detail page only for GFiber candidates — ~50-500 per county vs 11,000+
     detail = None
-    if row.detail_url:
+    if row.detail_url and _worth_detail_fetch(row):
         try:
             detail = await detail_adapter.fetch(ctx, row.ticket_number, row.county, row.detail_url)
         except Exception as exc:
