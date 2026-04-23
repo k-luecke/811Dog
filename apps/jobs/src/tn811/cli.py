@@ -75,21 +75,7 @@ async def _run_scrape(cfg, counties, dry_run: bool):
     from datetime import timedelta
 
     from tn811.db import get_session
-    from tn811.grouping.infer import infer_work_groups
-    from tn811.models import (
-        ORMParseFailure,
-        ORMScrapeRun,
-        ORMTicket,
-        ORMTicketSnapshot,
-        ParseFailureReason,
-        ScrapeRunStatus,
-        normalized_to_orm_dict,
-    )
-    from tn811.normalize.tickets import normalize_ticket
-    from tn811.pdf.downloader import PDFDownloader
-    from tn811.pdf.extractor import extract_fields
-    from tn811.pdf.fingerprints import pdf_already_parsed
-    from tn811.pdf.parser import PDFParser
+    from tn811.models import ORMScrapeRun, ScrapeRunStatus
     from tn811.portal.browser import browser_context
     from tn811.portal.detail import DetailAdapter
     from tn811.portal.search import SearchAdapter
@@ -100,8 +86,6 @@ async def _run_scrape(cfg, counties, dry_run: bool):
     date_from = date_to - timedelta(days=cfg.portal.date_window_days)
 
     matcher = RelevanceMatcher(cfg.relevance)
-    downloader = PDFDownloader(cfg.portal, cfg.paths.raw_pdf_dir)
-    pdf_parser = PDFParser(cfg.pdf)
     search_adapter = SearchAdapter(cfg.portal, cfg.paths.raw_html_dir)
     detail_adapter = DetailAdapter(cfg.portal, cfg.paths.raw_html_dir)
 
@@ -119,7 +103,7 @@ async def _run_scrape(cfg, counties, dry_run: bool):
             session.flush()
             run_id = run.id
 
-    stats = {"found": 0, "new": 0, "changed": 0, "unchanged": 0, "pdfs": 0, "failures": 0}
+    stats = {"found": 0, "new": 0, "changed": 0, "unchanged": 0, "failures": 0}
 
     try:
         async with browser_context(cfg.portal) as ctx:
@@ -129,7 +113,7 @@ async def _run_scrape(cfg, counties, dry_run: bool):
                     stats["found"] += 1
                     try:
                         await _process_ticket_row(
-                            row, ctx, cfg, detail_adapter, downloader, pdf_parser,
+                            row, ctx, cfg, detail_adapter,
                             matcher, dry_run, stats, now,
                         )
                     except Exception as exc:
@@ -157,7 +141,7 @@ async def _run_scrape(cfg, counties, dry_run: bool):
                     run.tickets_new = stats["new"]
                     run.tickets_changed = stats["changed"]
                     run.tickets_unchanged = stats["unchanged"]
-                    run.pdfs_downloaded = stats["pdfs"]
+                    run.pdfs_downloaded = 0
                     run.parse_failures = stats["failures"]
 
     except Exception as exc:
@@ -179,29 +163,13 @@ async def _run_scrape(cfg, counties, dry_run: bool):
 
 
 async def _process_ticket_row(
-    row, ctx, cfg, detail_adapter, downloader, pdf_parser, matcher, dry_run, stats, now
+    row, ctx, cfg, detail_adapter, matcher, dry_run, stats, now
 ):
     from tn811.db import get_session
-    from tn811.models import (
-        ORMTicket, ORMTicketSnapshot, normalized_to_orm_dict,
-    )
+    from tn811.models import ORMTicket, ORMTicketSnapshot, normalized_to_orm_dict
     from tn811.normalize.tickets import normalize_ticket
-    from tn811.pdf.extractor import extract_fields
-    from tn811.pdf.fingerprints import pdf_already_parsed
 
-    # Check if we already know this ticket
-    existing_hash = None
-    existing_pdf_hash = None
-    if not dry_run:
-        with get_session() as session:
-            existing = session.query(ORMTicket).filter_by(
-                ticket_number=row.ticket_number
-            ).first()
-            if existing:
-                existing_hash = existing.latest_content_hash
-                existing_pdf_hash = existing.source_pdf_sha256
-
-    # Fetch detail page (always, to discover PDF URL and cancellation)
+    # Fetch detail page
     detail = None
     if row.detail_url:
         try:
@@ -212,36 +180,8 @@ async def _process_ticket_row(
                 extra={"ticket": row.ticket_number, "error": str(exc)},
             )
 
-    # Download PDF if available
-    pdf_path = None
-    pdf_sha256 = None
-    extracted = None
-
-    if detail and detail.pdf_url and not dry_run:
-        from pathlib import Path
-        dest = Path(cfg.paths.raw_pdf_dir) / f"{row.ticket_number}.pdf"
-        if not pdf_already_parsed(dest, existing_pdf_hash):
-            try:
-                result = await downloader.download(row.ticket_number, detail.pdf_url)
-                pdf_path = str(result.path)
-                pdf_sha256 = result.sha256
-                stats["pdfs"] += 1
-
-                raw = pdf_parser.parse(result.path)
-                extracted = extract_fields(raw.full_text, county_hint=row.county)
-            except Exception as exc:
-                logger.warning(
-                    "PDF download/parse failed",
-                    extra={"ticket": row.ticket_number, "error": str(exc)},
-                )
-        else:
-            pdf_path = str(dest)
-            pdf_sha256 = existing_pdf_hash
-
-    # Normalize
-    ticket = normalize_ticket(row, detail, extracted, pdf_path, pdf_sha256, now)
-
-    # Score relevance
+    # Normalize and score
+    ticket = normalize_ticket(row, detail, now=now)
     matcher.apply(ticket)
 
     if dry_run:
@@ -262,7 +202,6 @@ async def _process_ticket_row(
         ).first()
 
         if existing is None:
-            # New ticket
             orm_t = ORMTicket(**ticket_dict, created_at=now)
             session.add(orm_t)
             session.flush()
@@ -277,7 +216,6 @@ async def _process_ticket_row(
             logger.info("New ticket stored", extra={"ticket": ticket.ticket_number})
 
         elif existing.latest_content_hash != new_hash:
-            # Changed ticket
             for k, v in ticket_dict.items():
                 setattr(existing, k, v)
             snapshot = ORMTicketSnapshot(
@@ -513,13 +451,9 @@ async def _run_backfill(cfg, counties, windows, dry_run: bool, now):
     from tn811.portal.browser import browser_context
     from tn811.portal.detail import DetailAdapter
     from tn811.portal.search import SearchAdapter
-    from tn811.pdf.downloader import PDFDownloader
-    from tn811.pdf.parser import PDFParser
     from tn811.relevance.matcher import RelevanceMatcher
 
     matcher = RelevanceMatcher(cfg.relevance)
-    downloader = PDFDownloader(cfg.portal, cfg.paths.raw_pdf_dir)
-    pdf_parser = PDFParser(cfg.pdf)
     search_adapter = SearchAdapter(cfg.portal, cfg.paths.raw_html_dir)
     detail_adapter = DetailAdapter(cfg.portal, cfg.paths.raw_html_dir)
 
@@ -529,13 +463,13 @@ async def _run_backfill(cfg, counties, windows, dry_run: bool, now):
         for county in counties:
             for window_start, window_end in windows:
                 click.echo(f"  Scraping {county.name}: {window_start} → {window_end}")
-                stats = {"found": 0, "new": 0, "changed": 0, "unchanged": 0, "pdfs": 0, "failures": 0}
+                stats = {"found": 0, "new": 0, "changed": 0, "unchanged": 0, "failures": 0}
                 async for row in search_adapter.search_county(ctx, county, window_start, window_end):
                     stats["found"] += 1
                     total_stats["found"] += 1
                     try:
                         await _process_ticket_row(
-                            row, ctx, cfg, detail_adapter, downloader, pdf_parser,
+                            row, ctx, cfg, detail_adapter,
                             matcher, dry_run, stats, now,
                         )
                     except Exception as exc:
