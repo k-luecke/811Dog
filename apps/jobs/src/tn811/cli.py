@@ -819,6 +819,44 @@ def rescore(config_path: str, dry_run: bool):
         click.echo("\n[DRY RUN — no changes written]")
 
 
+# ── match-nashdigs ────────────────────────────────────────────────────────────
+
+@main.command("match-nashdigs")
+@click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
+@click.option("--dry-run", is_flag=True, help="Compute matches but don't write to the DB.")
+def match_nashdigs(config_path: str, dry_run: bool):
+    """Spatial-join every relevant ticket against cached NashDigs packages.
+
+    Assigns `nashdigs_project_name` + confidence tier (high ≤25 m, medium
+    25–75 m, low 75–150 m, none >150 m). Run `fetch-nashdigs` first so the
+    cache is populated. Safe to re-run after every scrape — re-matching is
+    cheap and recovers correct tags when packages are added or moved.
+    """
+    cfg = _load_app(config_path)
+
+    from tn811.db import get_engine, get_session
+    from tn811.connectors.nashdigs_match import match_all_relevant_tickets
+
+    # Idempotent migration so older DBs gain the 3 match columns
+    _migrate_add_utility_columns(get_engine())
+
+    with get_session() as session:
+        stats = match_all_relevant_tickets(session, dry_run=dry_run)
+
+    click.echo(f"Matched {stats.total:,} relevant ticket(s):")
+    click.echo(f"  high    (≤25 m):   {stats.high:>5}")
+    click.echo(f"  medium  (25-75):   {stats.medium:>5}")
+    click.echo(f"  low     (75-150):  {stats.low:>5}")
+    click.echo(f"  none    (>150 m):  {stats.none:>5}")
+    click.echo(f"  skipped (no coords):       {stats.skipped_no_coords:>5}")
+    if stats.skipped_no_packages:
+        click.echo(
+            f"  ⚠ skipped because no cached packages: {stats.skipped_no_packages}"
+        )
+    if dry_run:
+        click.echo("\n[DRY RUN — no DB writes]")
+
+
 # ── fetch-nashdigs ────────────────────────────────────────────────────────────
 
 @main.command("fetch-nashdigs")
@@ -1141,6 +1179,9 @@ def _migrate_add_utility_columns(engine) -> None:
         ("longitude", "REAL"),
         ("secondary_latitude", "REAL"),
         ("secondary_longitude", "REAL"),
+        ("nashdigs_project_name", "VARCHAR(64)"),
+        ("nashdigs_match_confidence", "VARCHAR(16)"),
+        ("nashdigs_distance_m", "REAL"),
     ]
 
     added = []
