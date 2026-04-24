@@ -33,9 +33,13 @@ data/tn811-monitor.log
 # Database (contains PII — keep out of version control in production)
 # For development you may want to track this; comment out if so
 data/tn811.db
+data/tn811.db-journal
+data/*.db-wal
+data/*.db-shm
 
-# Keep sample exports (no PII beyond ticket numbers, needed for dashboard dev)
-!data/exports/
+# Exports are reproducible from the DB by the CSV exporter — never tracked.
+# Dashboard fixtures, if ever needed, live in apps/dashboard/fixtures/.
+data/exports/
 
 # Playwright
 playwright-report/
