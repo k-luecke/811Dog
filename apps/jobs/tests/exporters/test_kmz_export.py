@@ -18,8 +18,14 @@ from zoneinfo import ZoneInfo
 from tn811.exporters.csv_export import TicketView, utility_summary
 from tn811.exporters.kmz_export import (
     CAUTION_ICON_URL,
+    CIRCLE_FILL_ALPHA,
+    CIRCLE_OUTLINE_ALPHA,
+    CIRCLE_RADIUS_M,
+    CIRCLE_VERTICES,
     HAVERSINE_THRESHOLD_M,
+    _apply_alpha,
     _build_and_save,
+    circle_polygon,
     haversine_m,
     is_problem_ticket,
     sub_color,
@@ -487,3 +493,193 @@ def test_is_problem_ticket():
     assert not is_problem_ticket(_mk(
         ticket_number="X", latitude=0, longitude=0,
     ))
+
+
+# ── Dig zone circles ──────────────────────────────────────────────────────────
+
+
+class TestCirclePolygon:
+    def test_vertex_count_closed_ring(self):
+        ring = circle_polygon(36.10, -86.73)
+        # 32 vertices + 1 closing vertex = 33
+        assert len(ring) == CIRCLE_VERTICES + 1
+        assert ring[0] == ring[-1]
+
+    def test_each_vertex_is_about_25m_from_center(self):
+        ring = circle_polygon(36.10, -86.73)
+        # Ignore the closing duplicate
+        for lon, lat in ring[:-1]:
+            d = haversine_m(36.10, -86.73, lat, lon)
+            # Flat-earth approximation at 36° lat is tight to ~0.1 % of R
+            assert abs(d - CIRCLE_RADIUS_M) < 0.5
+
+    def test_vertex_order_is_lon_lat(self):
+        """KML coordinate order: ring elements must be (lon, lat), not (lat, lon)."""
+        ring = circle_polygon(36.10, -86.73)
+        lon0, lat0 = ring[0]
+        # Center is (36.10 lat, -86.73 lon). Ring is ~25 m out — still ~36 lat, ~-86 lon.
+        assert 35.5 < lat0 < 36.5
+        assert -87.5 < lon0 < -86.0
+
+    def test_latitude_independence_of_ring_radius(self):
+        """At higher latitudes, lon spacing compresses — verify the ring still reads 25 m."""
+        for lat in (25.0, 36.0, 47.0):
+            ring = circle_polygon(lat, -86.73)
+            for lon, vlat in ring[:-1]:
+                d = haversine_m(lat, -86.73, vlat, lon)
+                assert abs(d - CIRCLE_RADIUS_M) < 0.5, (
+                    f"radius off at lat={lat}: vertex was {d:.2f} m from center"
+                )
+
+
+class TestApplyAlpha:
+    def test_twenty_percent_on_red(self):
+        """simplekml.Color.red is 'ff0000ff'; at alpha 0.2 we expect '33' prefix."""
+        assert _apply_alpha("ff0000ff", 0.20) == "330000ff"
+
+    def test_sixty_percent_on_red(self):
+        assert _apply_alpha("ff0000ff", 0.60) == "990000ff"
+
+    def test_preserves_bgr_bytes(self):
+        """Alpha change must not mangle the BGR portion."""
+        # Some arbitrary AABBGGRR
+        assert _apply_alpha("ff12ab34", 1.0) == "ff12ab34"
+        assert _apply_alpha("ff12ab34", 0.5) == "8012ab34"
+
+
+def test_circle_folder_hidden_by_default(tmp_path, sample_views):
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+    )
+    root = _parse_kmz(out)
+    doc = root.find("kml:Document", _NS)
+    dig = next(
+        f for f in doc.findall("kml:Folder", _NS)
+        if "Dig zone circles" in (f.findtext("kml:name", default="", namespaces=_NS) or "")
+    )
+    assert dig.findtext("kml:visibility", default="1", namespaces=_NS) == "0"
+    # And every urgency sub-folder inside is also hidden
+    for sub in dig.findall("kml:Folder", _NS):
+        assert sub.findtext("kml:visibility", default="1", namespaces=_NS) == "0"
+
+
+def test_polyline_ticket_gets_no_circle(tmp_path, sample_views):
+    """Ticket B has primary↔secondary >50 m apart — no circle for it.
+    Ticket A and D are point-rendered and should each get one circle."""
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+    )
+    root = _parse_kmz(out)
+    doc = root.find("kml:Document", _NS)
+    dig = next(
+        f for f in doc.findall("kml:Folder", _NS)
+        if "Dig zone circles" in (f.findtext("kml:name", default="", namespaces=_NS) or "")
+    )
+    polygons = dig.findall(".//kml:Polygon", _NS)
+    # Sample set: A (point, active), B (polyline, active), C (cancelled),
+    # D (point w/ late utility, active), E (no coords). Circles only for A + D.
+    assert len(polygons) == 2
+
+    # Also confirm ticket B's description does not appear in any dig-zone description
+    dig_texts = "".join(
+        (d.text or "")
+        for d in dig.iter("{http://www.opengis.net/kml/2.2}description")
+    )
+    assert "Ticket A" in dig_texts  # A's popup rendered on its circle
+    assert "Ticket D" in dig_texts
+    assert "Ticket B" not in dig_texts  # polyline ticket: no circle
+
+
+def test_circle_opacity_in_kml(tmp_path, sample_views):
+    """Fill-alpha byte 33 (= 0x33 = 51) and outline-alpha byte 99 (= 0x99 = 153)
+    must appear as the leading AA on at least one polyStyle and lineStyle in
+    the output."""
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+    )
+    with zipfile.ZipFile(out) as z:
+        name = next(n for n in z.namelist() if n.endswith(".kml"))
+        kml_text = z.read(name).decode("utf-8")
+
+    # Fill alpha 0.20 → 0x33
+    assert "330000ff" in kml_text.lower(), "fill alpha 0x33 on red not found"
+    # Outline alpha 0.60 → 0x99
+    assert "990000ff" in kml_text.lower(), "outline alpha 0x99 on red not found"
+
+
+def test_circle_count_matches_point_rendered_active_tickets(tmp_path, sample_views):
+    """One circle per point-only active GFiber ticket. Polyline, cancelled,
+    and non-GFiber tickets must not produce circles."""
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+    )
+    root = _parse_kmz(out)
+    doc = root.find("kml:Document", _NS)
+    dig = next(
+        f for f in doc.findall("kml:Folder", _NS)
+        if "Dig zone circles" in (f.findtext("kml:name", default="", namespaces=_NS) or "")
+    )
+    circle_count = len(dig.findall(".//kml:Polygon", _NS))
+    # Count expected: active GFiber + point-rendered (not polyline)
+    from tn811.exporters.kmz_export import _is_point_only
+    expected = sum(
+        1 for v in sample_views
+        if (not v.is_cancelled) and _is_point_only(v)
+    )
+    assert circle_count == expected
+
+
+def test_circle_ring_vertices_match_expected_geometry(tmp_path, sample_views):
+    """Parse one circle's outerBoundaryIs and verify it has 33 vertices (32 closed)."""
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+    )
+    root = _parse_kmz(out)
+    polygon = next(root.iter("{http://www.opengis.net/kml/2.2}Polygon"), None)
+    assert polygon is not None
+    coords_text = polygon.findtext(
+        "kml:outerBoundaryIs/kml:LinearRing/kml:coordinates",
+        default="",
+        namespaces=_NS,
+    ).strip()
+    # KML coords are whitespace-separated "lon,lat[,alt]" triples/tuples
+    tuples = [t for t in coords_text.split() if t]
+    assert len(tuples) == CIRCLE_VERTICES + 1, (
+        f"expected {CIRCLE_VERTICES + 1} vertices in closed ring, got {len(tuples)}"
+    )
+    assert tuples[0] == tuples[-1]  # ring is closed
+
+
+def test_header_description_mentions_circle_layer(tmp_path, sample_views):
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+    )
+    root = _parse_kmz(out)
+    doc = root.find("kml:Document", _NS)
+    desc = doc.findtext("kml:description", default="", namespaces=_NS) or ""
+    assert "Dig zone circles" in desc
+    assert "±25m" in desc or "25" in desc
