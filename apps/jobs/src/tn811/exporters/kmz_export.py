@@ -1,0 +1,594 @@
+"""
+exporters/kmz_export.py — Google Earth (Pro) operational view.
+
+Produces a single .kmz bundle with a three-axis layer hierarchy so the
+supervisor can toggle between views in Google Earth's Places panel:
+
+  Ervin Ops Snapshot — <timestamp>
+  ├── Active GFiber — by urgency           (visible by default)
+  │   ├── Expiring ≤ 4 days            (red pins)
+  │   ├── Expiring 5–7 days            (orange pins)
+  │   ├── Expiring 8+ days             (blue pins)
+  │   └── No expire date               (gray pins)
+  ├── Active GFiber — by utility status    (hidden)
+  │   ├── Ready to dig                 (green)
+  │   ├── Pending utilities            (yellow)
+  │   ├── Has late utilities           (orange)
+  │   ├── Blocked — delayed            (orange-red)
+  │   └── Blocked — conflict/other     (dark red)
+  ├── Active GFiber — by sub               (hidden)
+  │   └── <one folder per excavator>   (deterministic per-sub color)
+  ├── Cancelled GFiber — last 14 days      (hidden)
+  └── Ervin non-GFiber                     (hidden, only if N > 0)
+
+Each active GFiber ticket is rendered three times — once per axis — so the
+layer toggles in Google Earth work independently. Tickets with late or
+blocking utilities use a caution icon regardless of folder so they stand
+out visually.
+
+Geometry: if primary + secondary coords are >50 m apart (haversine), the
+ticket renders as a LineString (dig path) plus a Point at the midpoint
+for the clickable pin. Otherwise a single Point at primary lat/lon.
+Tickets with no coords are skipped.
+"""
+from __future__ import annotations
+
+import hashlib
+import html
+import logging
+import math
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Iterable
+
+import simplekml
+from jinja2 import Environment
+from sqlalchemy.orm import Session
+
+from tn811.exporters.csv_export import (
+    CT,
+    TicketView,
+    _blocked_reason,
+    _group_by_slug,
+    ticket_view_from_orm,
+)
+from tn811.models import (
+    ORMTicket,
+    UTIL_STATUS_DELAYED,
+    UTIL_STATUS_NOT_CLEAR,
+)
+
+logger = logging.getLogger(__name__)
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+HAVERSINE_THRESHOLD_M = 50.0
+CAUTION_ICON_URL = "http://maps.google.com/mapfiles/kml/shapes/caution.png"
+DEFAULT_OUT_PATH = Path("data/exports/ervin_ops_snapshot.kmz")
+
+# Reserved RGB triples that sub-color hashing must avoid.
+_RESERVED_RGB: tuple[tuple[int, int, int], ...] = (
+    (255, 0, 0),       # red
+    (255, 165, 0),     # orange
+    (0, 0, 255),       # blue
+    (128, 128, 128),   # gray
+    (0, 255, 0),       # green
+    (255, 255, 0),     # yellow
+    (255, 69, 0),      # orange-red
+    (139, 0, 0),       # dark red
+    (128, 0, 128),     # purple
+    (255, 255, 255),   # white (unreadable)
+    (0, 0, 0),         # black (unreadable)
+)
+_RESERVED_MIN_DIST = 80.0  # Euclidean RGB distance under which we perturb
+
+
+# ── Popup HTML (Jinja2) ───────────────────────────────────────────────────────
+
+_POPUP_TEMPLATE_SRC = """\
+<h3>Ticket {{ ticket_number }}</h3>
+<table>
+  <tr><td><b>Excavator:</b></td><td>{{ excavator_name }}</td></tr>
+  <tr><td><b>Work Type:</b></td><td>{{ work_type }}</td></tr>
+  <tr><td><b>Done For:</b></td><td>{{ done_for }}</td></tr>
+  <tr><td><b>Called In:</b></td><td>{{ call_date }}</td></tr>
+  <tr><td><b>Expires:</b></td><td>{{ expire_date }}{% if days_until_expire is not none %} ({{ days_until_expire }} days){% endif %}</td></tr>
+  <tr><td><b>County:</b></td><td>{{ county }}</td></tr>
+  <tr><td><b>Location:</b></td><td>{{ address }}{% if intersection %} / {{ intersection }}{% endif %}</td></tr>
+  <tr><td><b>Utility Status:</b></td><td>{{ utility_summary }}</td></tr>
+  <tr><td><b>Ready to dig:</b></td><td>{{ "Yes" if is_ready_to_dig else "No" }}</td></tr>
+</table>
+{%- if remarks %}
+<h4>Remarks:</h4>
+<p>{{ remarks | nl2br }}</p>
+{%- endif %}
+{%- if utility_statuses %}
+<h4>Utilities:</h4>
+<table border="1" cellpadding="3">
+  <tr><th>Code</th><th>Name</th><th>Facility</th><th>Status</th><th>Last Response</th></tr>
+  {%- for u in utility_statuses %}
+  <tr><td>{{ u.code or '' }}</td><td>{{ u.name or '' }}</td><td>{{ u.facility or '' }}</td><td>{{ u.status or '' }}</td><td>{{ u.last_response or '' }}</td></tr>
+  {%- endfor %}
+</table>
+{%- endif %}
+"""
+
+
+def _nl2br(text) -> "Markup":
+    """Escape user text, then convert newlines to <br>. Returns Markup so Jinja
+    does not re-escape the <br> tags we just inserted."""
+    from markupsafe import Markup, escape
+    if text is None:
+        return Markup("")
+    return Markup(str(escape(str(text))).replace("\n", "<br>\n"))
+
+
+_JINJA_ENV = Environment(autoescape=True)
+_JINJA_ENV.filters["nl2br"] = _nl2br
+_POPUP_TEMPLATE = _JINJA_ENV.from_string(_POPUP_TEMPLATE_SRC)
+
+
+def _render_popup(view: TicketView) -> str:
+    """Render the KML description HTML for a ticket. All user-provided text is
+    autoescaped by Jinja; nl2br runs AFTER escape so <br> tags come through."""
+    return _POPUP_TEMPLATE.render(
+        ticket_number=view.ticket_number,
+        excavator_name=view.excavator_name,
+        work_type=view.work_type,
+        done_for=view.done_for,
+        call_date=view.call_date.isoformat() if view.call_date else "",
+        expire_date=view.expire_date.isoformat() if view.expire_date else "",
+        days_until_expire=view.days_until_expire,
+        county=view.county,
+        address=view.address,
+        intersection=view.intersection,
+        utility_summary=view.utility_summary,
+        is_ready_to_dig=view.is_ready_to_dig,
+        remarks=view.remarks,
+        utility_statuses=view.utility_statuses,
+    )
+
+
+# ── Geometry helpers ──────────────────────────────────────────────────────────
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in meters between two (lat, lon) points."""
+    r = 6_371_000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return r * c
+
+
+def _midpoint(lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float, float]:
+    """Good enough at sub-kilometer dig-path scale; no great-circle correction."""
+    return ((lat1 + lat2) / 2.0, (lon1 + lon2) / 2.0)
+
+
+# ── Color helpers ─────────────────────────────────────────────────────────────
+
+
+def _rgb_distance(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def _too_close_to_reserved(rgb: tuple[int, int, int]) -> bool:
+    return any(_rgb_distance(rgb, res) < _RESERVED_MIN_DIST for res in _RESERVED_RGB)
+
+
+def sub_color(name: str) -> str:
+    """Deterministic KML color for a subcontractor name. Same input always
+    yields the same color; result is guaranteed to be at least _RESERVED_MIN_DIST
+    from every reserved urgency/status color.
+
+    Uses MD5 as a stable hash (seeded perturbation if the raw hash is too close
+    to a reserved color, so the output is still deterministic across runs).
+    """
+    seed = 0
+    while True:
+        digest = hashlib.md5(f"{name}|{seed}".encode("utf-8")).digest()
+        rgb = (digest[0], digest[1], digest[2])
+        if not _too_close_to_reserved(rgb):
+            return simplekml.Color.rgb(*rgb)
+        seed += 1
+        if seed > 64:  # pathological case; fall through with a muted fallback
+            return simplekml.Color.rgb(100, 100, 200)
+
+
+# ── Bucket assignment ─────────────────────────────────────────────────────────
+
+
+def urgency_bucket(view: TicketView) -> tuple[str, str]:
+    """Return (bucket_label, simplekml color) for the urgency axis."""
+    d = view.days_until_expire
+    if d is None:
+        return ("No expire date", simplekml.Color.gray)
+    if d <= 4:
+        return ("Expiring ≤ 4 days", simplekml.Color.red)
+    if d <= 7:
+        return ("Expiring 5–7 days", simplekml.Color.orange)
+    return ("Expiring 8+ days", simplekml.Color.blue)
+
+
+def utility_status_bucket(view: TicketView) -> tuple[str, str]:
+    """Return (bucket_label, color). One ticket goes in exactly one bucket —
+    most severe category wins: conflict > delayed > late > pending > ready."""
+    # Scan blocked utilities for reason
+    has_conflict = False
+    has_delayed = False
+    for s in view.utility_statuses or []:
+        if s.get("status") not in (UTIL_STATUS_DELAYED, UTIL_STATUS_NOT_CLEAR):
+            continue
+        reason = _blocked_reason(s.get("last_response"))
+        if reason in ("in conflict", "cannot locate", "no response"):
+            has_conflict = True
+        elif reason == "delayed":
+            has_delayed = True
+
+    if has_conflict:
+        return ("Blocked — conflict/other", simplekml.Color.darkred)
+    if has_delayed:
+        return ("Blocked — delayed", simplekml.Color.orangered)
+    if view.has_late_utility:
+        return ("Has late utilities", simplekml.Color.orange)
+    if view.is_ready_to_dig:
+        return ("Ready to dig", simplekml.Color.green)
+    # Everything else — pending, or no utility data
+    return ("Pending utilities", simplekml.Color.yellow)
+
+
+def is_problem_ticket(view: TicketView) -> bool:
+    """Warning-icon predicate: late OR any blocking code regardless of reason."""
+    return view.has_late_utility or bool(view.blocking_utility_codes)
+
+
+# ── Style cache ───────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _StyleKey:
+    color: str
+    icon_url: str | None  # None → default pushpin
+
+
+class _StyleCache:
+    def __init__(self, kml: simplekml.Kml):
+        self._kml = kml
+        self._cache: dict[_StyleKey, simplekml.Style] = {}
+
+    def get(self, color: str, *, caution: bool) -> simplekml.Style:
+        key = _StyleKey(color=color, icon_url=CAUTION_ICON_URL if caution else None)
+        if key not in self._cache:
+            style = simplekml.Style()
+            style.iconstyle.color = color
+            if caution:
+                style.iconstyle.icon.href = CAUTION_ICON_URL
+                style.iconstyle.scale = 1.2
+            style.linestyle.color = color
+            style.linestyle.width = 4
+            style.labelstyle.scale = 0.8
+            self._cache[key] = style
+        return self._cache[key]
+
+
+# ── Top-level entry points ────────────────────────────────────────────────────
+
+
+@dataclass
+class KmzManifest:
+    out_path: Path
+    generated_at: datetime
+    total_placemarks: int
+    folder_counts: dict[str, int]
+    skipped_no_coords: int
+    active_gfiber: int
+    cancelled_gfiber_14d: int
+    ervin_non_gfiber: int
+
+
+def export(
+    session: Session,
+    out_path: Path | str = DEFAULT_OUT_PATH,
+    now: datetime | None = None,
+    desktop_mirror_path: Path | str | None = None,
+) -> KmzManifest:
+    """Query the DB, assemble the KMZ, and optionally mirror it to a desktop dir.
+
+    The mirror path is treated as a directory; the .kmz file is copied into it.
+    Errors on the mirror side log a warning and do not fail the primary write.
+    """
+    now = now or datetime.now(timezone.utc)
+    now_ct = now.astimezone(CT)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    views_gfiber, views_ervin_non_gf = _load_views(session, now_ct)
+
+    manifest = _build_and_save(
+        views_gfiber=views_gfiber,
+        views_ervin_non_gf=views_ervin_non_gf,
+        out_path=out_path,
+        now_ct=now_ct,
+    )
+
+    if desktop_mirror_path:
+        _mirror_kmz(out_path, Path(desktop_mirror_path))
+
+    return manifest
+
+
+def _load_views(
+    session: Session, now_ct: datetime
+) -> tuple[list[TicketView], list[TicketView]]:
+    """Pull the two groups of tickets the KMZ needs: all GFiber + any
+    Ervin-adjacent tickets that somehow slipped classification."""
+    gfiber_orm = (
+        session.query(ORMTicket).filter(ORMTicket.is_gfiber_related == True).all()  # noqa: E712
+    )
+    gfiber_views = [ticket_view_from_orm(t, now_ct) for t in gfiber_orm]
+
+    ervin_non_gf_orm = (
+        session.query(ORMTicket)
+        .filter(ORMTicket.is_gfiber_related == False)  # noqa: E712
+        .filter(ORMTicket.done_for.ilike("%ervin cable%"))
+        .all()
+    )
+    ervin_views = [ticket_view_from_orm(t, now_ct) for t in ervin_non_gf_orm]
+    return gfiber_views, ervin_views
+
+
+def _build_and_save(
+    views_gfiber: list[TicketView],
+    views_ervin_non_gf: list[TicketView],
+    out_path: Path,
+    now_ct: datetime,
+) -> KmzManifest:
+    """Assemble the full KML tree and write the .kmz."""
+    today = now_ct.date()
+    cutoff_cancelled_14d = today - timedelta(days=14)
+
+    active_gfiber = [v for v in views_gfiber if not v.is_cancelled]
+    cancelled_14d = [
+        v for v in views_gfiber
+        if v.is_cancelled and v.call_date and v.call_date >= cutoff_cancelled_14d
+    ]
+
+    skipped_no_coords = sum(
+        1 for v in active_gfiber + cancelled_14d + views_ervin_non_gf
+        if v.latitude is None or v.longitude is None
+    )
+
+    kml = simplekml.Kml()
+    kml.document.name = (
+        f"Ervin Ops Snapshot — {now_ct.strftime('%Y-%m-%d %H:%M')} "
+        f"{now_ct.tzname() or 'CT'}"
+    )
+    kml.document.description = (
+        f"Generated {now_ct.isoformat()}. "
+        f"Active GFiber: {len(active_gfiber)}  |  "
+        f"Cancelled GFiber (14d): {len(cancelled_14d)}  |  "
+        f"Ervin non-GFiber: {len(views_ervin_non_gf)}  |  "
+        f"Skipped (no coords): {skipped_no_coords}"
+    )
+
+    styles = _StyleCache(kml)
+    folder_counts: dict[str, int] = {}
+    total_placemarks = 0
+
+    # ── Axis 1: urgency (visible) ────────────────────────────────────────────
+    urgency_root = kml.newfolder(name="Active GFiber — by urgency")
+    urgency_root.visibility = 1
+    urgency_buckets: dict[str, list[TicketView]] = {}
+    for v in active_gfiber:
+        if v.latitude is None or v.longitude is None:
+            continue
+        label, _ = urgency_bucket(v)
+        urgency_buckets.setdefault(label, []).append(v)
+    for label in ("Expiring ≤ 4 days", "Expiring 5–7 days",
+                  "Expiring 8+ days", "No expire date"):
+        bucket = urgency_buckets.get(label, [])
+        sub = urgency_root.newfolder(name=f"{label} ({len(bucket)})")
+        sub.visibility = 1
+        color = _urgency_color_for_label(label)
+        for v in bucket:
+            _add_placemark(sub, v, color, styles)
+            total_placemarks += 1
+        folder_counts[f"urgency/{label}"] = len(bucket)
+    urgency_root.name = f"Active GFiber — by urgency ({sum(len(b) for b in urgency_buckets.values())})"
+
+    # ── Axis 2: utility status (hidden) ──────────────────────────────────────
+    status_root = kml.newfolder(name="Active GFiber — by utility status")
+    status_root.visibility = 0
+    status_buckets: dict[str, list[TicketView]] = {}
+    for v in active_gfiber:
+        if v.latitude is None or v.longitude is None:
+            continue
+        label, _ = utility_status_bucket(v)
+        status_buckets.setdefault(label, []).append(v)
+    for label in ("Ready to dig", "Pending utilities", "Has late utilities",
+                  "Blocked — delayed", "Blocked — conflict/other"):
+        bucket = status_buckets.get(label, [])
+        sub = status_root.newfolder(name=f"{label} ({len(bucket)})")
+        sub.visibility = 0
+        color = _status_color_for_label(label)
+        for v in bucket:
+            _add_placemark(sub, v, color, styles)
+            total_placemarks += 1
+        folder_counts[f"status/{label}"] = len(bucket)
+    status_root.name = f"Active GFiber — by utility status ({sum(len(b) for b in status_buckets.values())})"
+
+    # ── Axis 3: by sub (hidden) ──────────────────────────────────────────────
+    # Merge raw-name aliases via slug so "Blue Ocean" and "Blue Ocean Contractors"
+    # share one folder — matches the CSV exporter's behavior for consistency.
+    sub_root = kml.newfolder(name="Active GFiber — by sub")
+    sub_root.visibility = 0
+    views_for_grouping = [
+        v for v in active_gfiber
+        if v.latitude is not None and v.longitude is not None
+    ]
+    by_slug = _group_by_slug(views_for_grouping)
+    total_sub_placed = 0
+    # Sort by active count desc, then canonical display name
+    sorted_slugs = sorted(
+        by_slug,
+        key=lambda s: (-len(by_slug[s][1]), by_slug[s][0]),
+    )
+    for slug in sorted_slugs:
+        display_name, bucket = by_slug[slug]
+        sub = sub_root.newfolder(name=f"{display_name} ({len(bucket)})")
+        sub.visibility = 0
+        color = sub_color(slug)  # hash on slug so aliases share a color
+        for v in bucket:
+            _add_placemark(sub, v, color, styles)
+            total_placemarks += 1
+            total_sub_placed += 1
+        folder_counts[f"sub/{slug}"] = len(bucket)
+    sub_root.name = f"Active GFiber — by sub ({total_sub_placed})"
+
+    # ── Cancelled GFiber (last 14 days) ──────────────────────────────────────
+    cancelled_folder = kml.newfolder(
+        name=f"Cancelled GFiber — last 14 days ({len(cancelled_14d)})"
+    )
+    cancelled_folder.visibility = 0
+    for v in cancelled_14d:
+        if v.latitude is None or v.longitude is None:
+            continue
+        _add_placemark(cancelled_folder, v, simplekml.Color.gray, styles)
+        total_placemarks += 1
+    folder_counts["cancelled_14d"] = len(cancelled_14d)
+
+    # ── Ervin non-GFiber (only if any) ───────────────────────────────────────
+    if views_ervin_non_gf:
+        ervin_folder = kml.newfolder(
+            name=f"Ervin non-GFiber ({len(views_ervin_non_gf)})"
+        )
+        ervin_folder.visibility = 0
+        for v in views_ervin_non_gf:
+            if v.latitude is None or v.longitude is None:
+                continue
+            _add_placemark(ervin_folder, v, simplekml.Color.purple, styles)
+            total_placemarks += 1
+        folder_counts["ervin_non_gfiber"] = len(views_ervin_non_gf)
+
+    kml.savekmz(str(out_path))
+
+    return KmzManifest(
+        out_path=out_path,
+        generated_at=now_ct,
+        total_placemarks=total_placemarks,
+        folder_counts=folder_counts,
+        skipped_no_coords=skipped_no_coords,
+        active_gfiber=len(active_gfiber),
+        cancelled_gfiber_14d=len(cancelled_14d),
+        ervin_non_gfiber=len(views_ervin_non_gf),
+    )
+
+
+def _urgency_color_for_label(label: str) -> str:
+    return {
+        "Expiring ≤ 4 days": simplekml.Color.red,
+        "Expiring 5–7 days": simplekml.Color.orange,
+        "Expiring 8+ days": simplekml.Color.blue,
+        "No expire date": simplekml.Color.gray,
+    }[label]
+
+
+def _status_color_for_label(label: str) -> str:
+    return {
+        "Ready to dig": simplekml.Color.green,
+        "Pending utilities": simplekml.Color.yellow,
+        "Has late utilities": simplekml.Color.orange,
+        "Blocked — delayed": simplekml.Color.orangered,
+        "Blocked — conflict/other": simplekml.Color.darkred,
+    }[label]
+
+
+def _add_placemark(
+    folder: simplekml.Folder,
+    view: TicketView,
+    color: str,
+    styles: _StyleCache,
+) -> None:
+    """Emit one placemark (or pin + line pair) for a ticket into the folder.
+
+    KML coordinate order is (longitude, latitude) — reverse of DB storage.
+    """
+    lat, lon = view.latitude, view.longitude  # guaranteed non-None by caller
+    caution = is_problem_ticket(view)
+    style = styles.get(color, caution=caution)
+    description = _render_popup(view)
+
+    # Decide geometry: LineString+midpoint if >50m apart, else single Point
+    if (
+        view.secondary_latitude is not None
+        and view.secondary_longitude is not None
+        and haversine_m(lat, lon, view.secondary_latitude, view.secondary_longitude)
+        > HAVERSINE_THRESHOLD_M
+    ):
+        slat, slon = view.secondary_latitude, view.secondary_longitude
+        # LineString (the dig path). No label — pin carries the click target.
+        line = folder.newlinestring(
+            name="",
+            coords=[(lon, lat), (slon, slat)],
+        )
+        line.style = style
+        line.description = description  # users can click the line too
+        # Midpoint pin (click target)
+        mlat, mlon = _midpoint(lat, lon, slat, slon)
+        pin = folder.newpoint(
+            name=view.ticket_number,
+            coords=[(mlon, mlat)],
+            description=description,
+        )
+        pin.style = style
+    else:
+        pin = folder.newpoint(
+            name=view.ticket_number,
+            coords=[(lon, lat)],
+            description=description,
+        )
+        pin.style = style
+
+
+# ── Desktop mirror ────────────────────────────────────────────────────────────
+
+
+def _mirror_kmz(src_file: Path, dest_dir: Path) -> bool:
+    """Copy the single .kmz into the desktop mirror folder. Replaces any prior
+    file of the same name; leaves unrelated files alone.
+
+    Matches the spirit of `mirror_to_desktop` in csv_export.py — errors log
+    WARNING and never raise. Primary write is the source of truth.
+    """
+    import shutil
+
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "KMZ desktop mirror: cannot create destination — skipping",
+            extra={"dest": str(dest_dir), "error": str(exc)},
+        )
+        return False
+
+    dest_file = dest_dir / src_file.name
+    try:
+        if dest_file.exists():
+            dest_file.unlink()
+        shutil.copy2(src_file, dest_file)
+    except OSError as exc:
+        logger.warning(
+            "KMZ desktop mirror: copy failed — primary .kmz is intact",
+            extra={"src": str(src_file), "dest": str(dest_file), "error": str(exc)},
+        )
+        return False
+
+    logger.info(
+        "KMZ desktop mirror: bundle copied",
+        extra={"src": str(src_file), "dest": str(dest_file)},
+    )
+    return True

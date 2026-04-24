@@ -152,6 +152,8 @@ class TicketView:
     remarks: str
     latitude: float | None = None
     longitude: float | None = None
+    secondary_latitude: float | None = None
+    secondary_longitude: float | None = None
     utility_statuses: list[dict] = field(default_factory=list)
 
 
@@ -341,6 +343,8 @@ def ticket_view_from_orm(t: ORMTicket, now_ct: datetime) -> TicketView:
         remarks=t.remarks or "",
         latitude=t.latitude,
         longitude=t.longitude,
+        secondary_latitude=t.secondary_latitude,
+        secondary_longitude=t.secondary_longitude,
         utility_statuses=utility_statuses,
     )
 
