@@ -118,6 +118,24 @@ MASTER_FILES: tuple[str, ...] = (
     "relevant_utility_detail.csv",
     "relevant_cancelled_7d.csv",
     "unassigned_tickets_for_review.csv",
+    "packages_view.csv",
+)
+
+PACKAGES_VIEW_COLUMNS: tuple[str, ...] = (
+    "package_name",
+    "status",
+    "est_start_date",
+    "est_end_date",
+    "act_start_date",
+    "act_end_date",
+    "days_to_est_end",
+    "ticket_count_total",
+    "ticket_count_high_match",
+    "ticket_count_ready_to_dig",
+    "ticket_count_with_late_utility",
+    "ticket_count_blocked",
+    "earliest_ticket_expire_date",
+    "latest_ticket_call_date",
 )
 
 UNASSIGNED_REVIEW_COLUMNS: tuple[str, ...] = (
@@ -234,12 +252,26 @@ def export(
     out_path = Path(out_dir)
     views = load_ticket_views(session, now_ct)
     stats = _db_stats(session)
+
+    # Pull cached Northstar NashDigs packages for packages_view + by_package slices.
+    # Empty cache → 0-row packages_view and no by_package folders. Graceful.
+    try:
+        from tn811.connectors.nashdigs import load_cached
+        all_nashdigs = load_cached(session)
+        target_packages = [
+            p for p in all_nashdigs
+            if p.owner and "NORTHSTAR" in p.owner.upper()
+        ]
+    except Exception:
+        target_packages = []
+
     manifest = write_exports(
         views=views,
         out_dir=out_path,
         sub_slices=sub_slices,
         now_ct=now_ct,
         db_stats=stats,
+        nashdigs_target_packages=target_packages,
     )
 
     if desktop_mirror_path:
@@ -383,6 +415,7 @@ def write_exports(
     sub_slices: bool,
     now_ct: datetime,
     db_stats: dict | None = None,
+    nashdigs_target_packages: list | None = None,
 ) -> ExportManifest:
     """Delete stale outputs, write fresh CSVs, return a manifest."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -456,12 +489,19 @@ def write_exports(
     _write_unassigned_review_csv(review_path, review_rows)
     summaries.append(_summarize_file(review_path, len(review_rows)))
 
+    # NashDigs packages_view — one row per Northstar package with ticket aggregates
+    packages_path = out_dir / "packages_view.csv"
+    packages_list = nashdigs_target_packages or []
+    _write_packages_view_csv(packages_path, packages_list, views, today)
+    summaries.append(_summarize_file(packages_path, len(packages_list)))
+
     # Stable manifest order matches MASTER_FILES
     summaries = _order_summaries(summaries)
 
     sub_dirs: list[str] = []
     if sub_slices:
         sub_dirs = _write_sub_slices(out_dir, views, cutoff_7d)
+        _write_package_slices(out_dir, views, cutoff_7d)
 
     manifest = ExportManifest(
         generated_at=now_ct,
@@ -680,6 +720,115 @@ def _write_by_sub_csv(path: Path, rollups: Sequence[SubRollup]) -> None:
             )
 
 
+def _write_packages_view_csv(
+    path: Path,
+    packages,           # list[NashDigsPackage]; typed loose to avoid circular import
+    views: Sequence[TicketView],
+    today: date,
+) -> None:
+    """One row per Northstar-owned NashDigs package, with ticket aggregates.
+
+    Sorted by days_to_est_end ascending (soonest deadlines first). Packages
+    with no est_end_date fall to the bottom. Packages with zero tagged
+    tickets still appear — useful to see planned packages that haven't yet
+    generated any 811 activity.
+    """
+    # Group tickets by nashdigs_project_name for per-package aggregation
+    by_package: dict[str, list[TicketView]] = {}
+    for v in views:
+        if v.nashdigs_project_name:
+            by_package.setdefault(v.nashdigs_project_name, []).append(v)
+
+    def _days_to_end(p) -> int | None:
+        end = p.est_end_date or p.act_end_date
+        return (end - today).days if end else None
+
+    def _sort_key(p):
+        d = _days_to_end(p)
+        return (d is None, d if d is not None else 0, p.project_name)
+
+    rows: list[list] = []
+    for p in sorted(packages, key=_sort_key):
+        tagged = by_package.get(p.project_name, [])
+        active_tagged = [v for v in tagged if not v.is_cancelled]
+        high_match = sum(1 for v in tagged if v.nashdigs_match_confidence == "high")
+        ready = sum(1 for v in active_tagged if v.is_ready_to_dig)
+        late = sum(1 for v in active_tagged if v.has_late_utility)
+        blocked = sum(1 for v in active_tagged if v.blocking_utility_codes)
+
+        active_expires = [v.expire_date for v in active_tagged if v.expire_date]
+        earliest_expire = min(active_expires) if active_expires else None
+        active_calls = [v.call_date for v in active_tagged if v.call_date]
+        latest_call = max(active_calls) if active_calls else None
+
+        days_end = _days_to_end(p)
+        rows.append([
+            p.project_name,
+            p.status or "",
+            _fmt_date(p.est_start_date),
+            _fmt_date(p.est_end_date),
+            _fmt_date(p.act_start_date),
+            _fmt_date(p.act_end_date),
+            "" if days_end is None else days_end,
+            len(tagged),
+            high_match,
+            ready,
+            late,
+            blocked,
+            _fmt_date(earliest_expire),
+            _fmt_date(latest_call),
+        ])
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+        writer.writerow(PACKAGES_VIEW_COLUMNS)
+        writer.writerows(rows)
+
+
+def _write_package_slices(
+    out_dir: Path,
+    views: Sequence[TicketView],
+    cutoff_7d: date,
+) -> list[str]:
+    """Emit by_package/<slug>/{active,expiring_7d,late_utilities}.csv.
+
+    Mirrors the by_sub/ structure. Only packages with ≥1 tagged ticket get
+    a folder. Slug uses the BNA### name directly — it already conforms to
+    slugify rules (lowercased, dashes, alphanumerics).
+    """
+    by_package_dir = out_dir / "by_package"
+    by_package_dir.mkdir(parents=True, exist_ok=True)
+
+    buckets: dict[str, list[TicketView]] = {}
+    for v in views:
+        if v.nashdigs_project_name:
+            buckets.setdefault(v.nashdigs_project_name, []).append(v)
+
+    dirs: list[str] = []
+    for project_name in sorted(buckets):
+        pkg_views = buckets[project_name]
+        active = [v for v in pkg_views if not v.is_cancelled]
+        if not active:
+            continue
+
+        slug = slugify(project_name)
+        pkg_dir = by_package_dir / slug
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+
+        _write_master_csv(pkg_dir / "active.csv", _sorted_by_expire(active))
+
+        expiring = [v for v in active if v.expire_date and v.expire_date <= cutoff_7d]
+        if expiring:
+            _write_master_csv(pkg_dir / "expiring_7d.csv", _sorted_by_expire(expiring))
+
+        late = [v for v in active if v.has_late_utility]
+        if late:
+            _write_master_csv(pkg_dir / "late_utilities.csv", _sorted_by_expire(late))
+
+        dirs.append(f"by_package/{slug}")
+    return dirs
+
+
 def _write_unassigned_review_csv(
     path: Path,
     views: Sequence[TicketView],
@@ -887,6 +1036,9 @@ def _clear_stale_outputs(out_dir: Path) -> None:
     by_sub_dir = out_dir / "by_sub"
     if by_sub_dir.exists():
         shutil.rmtree(by_sub_dir)
+    by_package_dir = out_dir / "by_package"
+    if by_package_dir.exists():
+        shutil.rmtree(by_package_dir)
 
 
 def _summarize_file(path: Path, rows: int) -> FileSummary:

@@ -18,6 +18,7 @@ from tn811.exporters.csv_export import (
     BY_SUB_COLUMNS,
     MASTER_COLUMNS,
     MASTER_FILES,
+    PACKAGES_VIEW_COLUMNS,
     UTILITY_DETAIL_COLUMNS,
     TicketView,
     mirror_to_desktop,
@@ -51,6 +52,9 @@ def _mk(
     remarks: str = "",
     latitude: float | None = None,
     longitude: float | None = None,
+    nashdigs_project_name: str | None = None,
+    nashdigs_match_confidence: str | None = None,
+    nashdigs_distance_m: float | None = None,
 ) -> TicketView:
     utility_statuses = utility_statuses or []
     days_until_expire = (expire_date - TODAY).days if expire_date else None
@@ -91,6 +95,9 @@ def _mk(
         remarks=remarks,
         latitude=latitude,
         longitude=longitude,
+        nashdigs_project_name=nashdigs_project_name,
+        nashdigs_match_confidence=nashdigs_match_confidence,
+        nashdigs_distance_m=nashdigs_distance_m,
         utility_statuses=utility_statuses,
     )
 
@@ -736,6 +743,157 @@ def test_mirror_replaces_prior_bundle_not_unrelated_files(tmp_path, sample_views
     _, rows = _read_csv(mirror / "relevant_active.csv")
     assert "stale" not in {r["ticket_number"] for r in rows}
     assert not (mirror / "by_sub" / "ghost").exists()
+
+
+# ── Packages view (Commit 4) ─────────────────────────────────────────────────
+
+
+def _fake_pkg(name: str, *, status: str = "Started",
+              est_end: date | None = None,
+              project_id: int | None = None):
+    """Shim class matching NashDigsPackage just for the fields packages_view uses."""
+    from tn811.connectors.nashdigs import NashDigsPackage
+    return NashDigsPackage(
+        project_id=project_id or abs(hash(name)) % 100000,
+        project_name=name,
+        facility_type="Communication",
+        project_type="Underground",
+        description=None,
+        owner="Northstar",
+        department="Northstar",
+        division="Northstar",
+        status=status,
+        council_district="22",
+        est_start_date=date(2026, 1, 1),
+        est_end_date=est_end,
+        act_start_date=None,
+        act_end_date=None,
+        geometry_geojson={},
+    )
+
+
+def test_packages_view_sorted_by_days_to_est_end(tmp_path):
+    packages = [
+        _fake_pkg("BNA222a", est_end=date(2026, 6, 30), project_id=1),
+        _fake_pkg("BNA111a", est_end=date(2026, 5, 1), project_id=2),
+        _fake_pkg("BNA333a", est_end=None, project_id=3),  # no date → bottom
+    ]
+    views = [
+        _mk(ticket_number="T1", excavator="NORTH RIDGE",
+            call_date=date(2026, 4, 15), expire_date=date(2026, 4, 30),
+            nashdigs_project_name="BNA111a",
+            nashdigs_match_confidence="high"),
+    ]
+    write_exports(
+        views, tmp_path, sub_slices=False, now_ct=NOW_CT,
+        nashdigs_target_packages=packages,
+    )
+    header, rows = _read_csv(tmp_path / "packages_view.csv")
+    assert header == list(PACKAGES_VIEW_COLUMNS)
+    names = [r["package_name"] for r in rows]
+    # Soonest deadline first, then later deadline, then no-date
+    assert names == ["BNA111a", "BNA222a", "BNA333a"]
+
+
+def test_packages_view_ticket_count_aggregates(tmp_path):
+    packages = [_fake_pkg("BNA500a", est_end=date(2026, 6, 1))]
+    views = [
+        # 3 tagged to BNA500a — 2 active (1 ready, 1 late), 1 cancelled
+        _mk(ticket_number="P1", excavator="X",
+            call_date=date(2026, 4, 10), expire_date=date(2026, 4, 28),
+            is_ready_to_dig=True,
+            nashdigs_project_name="BNA500a",
+            nashdigs_match_confidence="high"),
+        _mk(ticket_number="P2", excavator="X",
+            call_date=date(2026, 4, 12), expire_date=date(2026, 5, 2),
+            has_late_utility=True, late_codes=["GFI"],
+            nashdigs_project_name="BNA500a",
+            nashdigs_match_confidence="medium"),
+        _mk(ticket_number="P3", excavator="X",
+            call_date=date(2026, 4, 14), expire_date=date(2026, 5, 4),
+            is_cancelled=True,
+            nashdigs_project_name="BNA500a",
+            nashdigs_match_confidence="high"),
+        # Unassigned ticket — must not appear in any package's count
+        _mk(ticket_number="P4", excavator="X",
+            call_date=date(2026, 4, 14), expire_date=date(2026, 5, 4)),
+    ]
+    write_exports(
+        views, tmp_path, sub_slices=False, now_ct=NOW_CT,
+        nashdigs_target_packages=packages,
+    )
+    _, rows = _read_csv(tmp_path / "packages_view.csv")
+    r = rows[0]
+    assert r["package_name"] == "BNA500a"
+    assert r["ticket_count_total"] == "3"
+    assert r["ticket_count_high_match"] == "2"  # P1 + P3
+    assert r["ticket_count_ready_to_dig"] == "1"  # P1 (active, ready)
+    assert r["ticket_count_with_late_utility"] == "1"  # P2
+    assert r["ticket_count_blocked"] == "0"
+    assert r["earliest_ticket_expire_date"] == "2026-04-28"
+    assert r["latest_ticket_call_date"] == "2026-04-12"
+
+
+def test_packages_view_empty_without_packages(tmp_path, sample_views):
+    """No NashDigs packages → packages_view.csv has header only."""
+    write_exports(
+        sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT,
+        nashdigs_target_packages=[],
+    )
+    _, rows = _read_csv(tmp_path / "packages_view.csv")
+    assert rows == []
+
+
+def test_by_package_slices_created_when_sub_slices_enabled(tmp_path):
+    packages = [_fake_pkg("BNA777a", est_end=date(2026, 6, 1))]
+    views = [
+        _mk(ticket_number="PP1", excavator="X",
+            call_date=date(2026, 4, 18),
+            expire_date=date(2026, 4, 27),  # within 7 days from NOW_CT
+            has_late_utility=True, late_codes=["MWS"],
+            nashdigs_project_name="BNA777a",
+            nashdigs_match_confidence="high"),
+    ]
+    write_exports(
+        views, tmp_path, sub_slices=True, now_ct=NOW_CT,
+        nashdigs_target_packages=packages,
+    )
+    pkg_dir = tmp_path / "by_package" / "bna777a"
+    assert pkg_dir.is_dir()
+    assert (pkg_dir / "active.csv").exists()
+    assert (pkg_dir / "expiring_7d.csv").exists()
+    assert (pkg_dir / "late_utilities.csv").exists()
+    _, rows = _read_csv(pkg_dir / "active.csv")
+    assert [r["ticket_number"] for r in rows] == ["PP1"]
+
+
+def test_by_package_slices_skipped_without_sub_slices_flag(tmp_path, sample_views):
+    """Only --sub-slices produces per-package folders, matching by_sub/ semantics."""
+    write_exports(
+        sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT,
+        nashdigs_target_packages=[],
+    )
+    assert not (tmp_path / "by_package").exists()
+
+
+def test_by_package_subtree_rebuilt_each_run(tmp_path):
+    """Stale folders from a prior run must be wiped when sub_slices=True."""
+    packages = [_fake_pkg("BNA888a")]
+    views = [
+        _mk(ticket_number="PP2", excavator="X",
+            call_date=date(2026, 4, 18), expire_date=date(2026, 5, 1),
+            nashdigs_project_name="BNA888a",
+            nashdigs_match_confidence="high"),
+    ]
+    write_exports(views, tmp_path, sub_slices=True, now_ct=NOW_CT,
+                  nashdigs_target_packages=packages)
+    stale = tmp_path / "by_package" / "ghost-package"
+    stale.mkdir(parents=True)
+    (stale / "active.csv").write_text("stale\n")
+
+    write_exports(views, tmp_path, sub_slices=True, now_ct=NOW_CT,
+                  nashdigs_target_packages=packages)
+    assert not stale.exists()
 
 
 # ── End-to-end through the real ORM ───────────────────────────────────────────
