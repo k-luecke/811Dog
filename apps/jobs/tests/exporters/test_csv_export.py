@@ -20,6 +20,7 @@ from tn811.exporters.csv_export import (
     MASTER_FILES,
     UTILITY_DETAIL_COLUMNS,
     TicketView,
+    mirror_to_desktop,
     slugify,
     utility_summary,
     write_exports,
@@ -528,6 +529,127 @@ class TestUtilitySummary:
             {"code": "B", "status": "unknown", "is_late": False},
         ]
         assert utility_summary(statuses) == "1 clear"
+
+
+# ── Desktop mirror ────────────────────────────────────────────────────────────
+
+
+def test_mirror_copies_full_bundle(tmp_path, sample_views):
+    """Files written to the primary dir must land in the mirror folder too."""
+    primary = tmp_path / "exports"
+    mirror = tmp_path / "windows-desktop" / "811dog"
+    write_exports(sample_views, primary, sub_slices=True, now_ct=NOW_CT)
+
+    assert mirror_to_desktop(primary, mirror) is True
+
+    for name in MASTER_FILES:
+        assert (mirror / name).exists(), f"Missing in mirror: {name}"
+    assert (mirror / "MANIFEST.txt").exists()
+    assert (mirror / "by_sub").is_dir()
+
+    # Spot-check that the mirrored CSV matches the primary row-for-row
+    _, primary_rows = _read_csv(primary / "gfiber_active.csv")
+    _, mirror_rows = _read_csv(mirror / "gfiber_active.csv")
+    assert primary_rows == mirror_rows
+
+
+def test_export_skips_mirror_when_path_is_none(in_memory_db):
+    """With `desktop_mirror_path=None` (the --no-desktop path in CLI), no mirror dir is written."""
+    from datetime import datetime as _dt
+
+    from tn811.db import get_session
+    from tn811.exporters.csv_export import export
+    from tn811.models import ORMTicket
+
+    now = _dt.now(timezone.utc)
+    with get_session() as session:
+        session.add(
+            ORMTicket(
+                ticket_number="NOMIRROR001",
+                county="Davidson County",
+                state="TN",
+                call_date="2026-04-20",
+                expiration_date="2026-04-27",
+                excavator_name="BLUE OCEAN",
+                caller_name="T",
+                caller_phone="",
+                work_type="FIBER",
+                location_text="X",
+                intersection_text="Y",
+                done_for="GOOGLE FIBER",
+                utility_statuses=[],
+                is_ready_to_dig=False,
+                has_late_utility=False,
+                late_utility_codes=[],
+                pending_utility_codes=[],
+                blocking_utility_codes=[],
+                status="active",
+                is_cancelled=False,
+                relevance_score=1.0,
+                is_gfiber_related=True,
+                created_at=now,
+                updated_at=now,
+                latest_content_hash="h",
+            )
+        )
+
+    primary = Path(in_memory_db.paths.exports_dir)
+    mirror_candidate = primary.parent / "should-not-appear"
+
+    with get_session() as session:
+        export(session, primary, sub_slices=False, desktop_mirror_path=None)
+
+    # Primary ran; mirror was never even looked at
+    assert (primary / "gfiber_active.csv").exists()
+    assert not mirror_candidate.exists()
+
+
+def test_mirror_warns_and_returns_false_on_unwritable_path(tmp_path, sample_views, caplog):
+    """A non-creatable mirror path must log a warning and return False, not raise."""
+    primary = tmp_path / "exports"
+    write_exports(sample_views, primary, sub_slices=False, now_ct=NOW_CT)
+
+    # Point the mirror at a path whose parent is a regular file — mkdir will fail
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    unwritable = blocker / "child"
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="tn811.exporters.csv_export"):
+        result = mirror_to_desktop(primary, unwritable)
+
+    assert result is False
+    assert any("Desktop mirror" in rec.message for rec in caplog.records)
+    # Primary is untouched
+    assert (primary / "gfiber_active.csv").exists()
+
+
+def test_mirror_replaces_prior_bundle_not_unrelated_files(tmp_path, sample_views):
+    """Unrelated files in the mirror dir must survive; only owned paths get wiped."""
+    primary = tmp_path / "exports"
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+
+    # User-dropped sidecar files that the mirror must not touch
+    (mirror / "notes.txt").write_text("my notes")
+    (mirror / "ignore_me.xlsx").write_text("excel")
+
+    write_exports(sample_views, primary, sub_slices=True, now_ct=NOW_CT)
+    # Seed a stale prior bundle in the mirror
+    (mirror / "gfiber_active.csv").write_text("stale,header\nstale,row\n")
+    (mirror / "by_sub").mkdir()
+    (mirror / "by_sub" / "ghost").mkdir()
+    (mirror / "by_sub" / "ghost" / "active.csv").write_text("x")
+
+    assert mirror_to_desktop(primary, mirror) is True
+
+    # Unrelated files preserved
+    assert (mirror / "notes.txt").exists()
+    assert (mirror / "ignore_me.xlsx").exists()
+    # Stale bundle wiped and replaced
+    _, rows = _read_csv(mirror / "gfiber_active.csv")
+    assert "stale" not in {r["ticket_number"] for r in rows}
+    assert not (mirror / "by_sub" / "ghost").exists()
 
 
 # ── End-to-end through the real ORM ───────────────────────────────────────────

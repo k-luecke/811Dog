@@ -88,6 +88,13 @@ class PathsConfig:
 
 
 @dataclass
+class ExportsConfig:
+    """Config for `tn811 export-csv` beyond the in-repo write path."""
+    desktop_mirror_path: str = ""
+    desktop_mirror_enabled: bool = False
+
+
+@dataclass
 class PdfConfig:
     primary_parser: str = "pdfplumber"
     fallback_to_pymupdf: bool = True
@@ -166,6 +173,7 @@ class AppConfig:
     portal: PortalConfig = field(default_factory=PortalConfig)
     counties: list[CountyConfig] = field(default_factory=list)
     paths: PathsConfig = field(default_factory=PathsConfig)
+    exports: ExportsConfig = field(default_factory=ExportsConfig)
     pdf: PdfConfig = field(default_factory=PdfConfig)
     relevance: RelevanceConfig = field(default_factory=RelevanceConfig)
     grouping: GroupingConfig = field(default_factory=GroupingConfig)
@@ -220,6 +228,12 @@ def load_config(path: str | Path = "config/monitoring.yaml") -> AppConfig:
     # paths
     if paths_raw := raw.get("paths"):
         cfg.paths = PathsConfig(**{k: v for k, v in paths_raw.items() if k in PathsConfig.__dataclass_fields__})
+
+    # exports
+    if exports_raw := raw.get("exports"):
+        cfg.exports = ExportsConfig(
+            **{k: v for k, v in exports_raw.items() if k in ExportsConfig.__dataclass_fields__}
+        )
 
     # pdf
     if pdf_raw := raw.get("pdf"):

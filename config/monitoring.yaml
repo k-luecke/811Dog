@@ -49,6 +49,19 @@ paths:
   exports_dir: "data/exports"
   reminder_preview_dir: "data/parsed/reminder_previews"
 
+# ── CSV exports ──────────────────────────────────────────────────────────────
+# Controls where `tn811 export-csv` places its supervisor CSV bundle in addition
+# to the in-repo `paths.exports_dir`. The mirror is a convenience so the files
+# land on the Windows desktop without manual WSL copying.
+exports:
+  # Windows path to mirror the export bundle into. From WSL this is under
+  # /mnt/c/Users/<windows-user>/. Quote the whole string so spaces in the user
+  # name don't break parsing.
+  desktop_mirror_path: "/mnt/c/Users/Kyle W. Luecke/Desktop/811dog"
+  # If false, skip the desktop copy entirely. Use `--no-desktop` on the CLI for
+  # a one-off skip without editing the config.
+  desktop_mirror_enabled: true
+
 # ── PDF parsing ───────────────────────────────────────────────────────────────
 pdf:
   # Primary parser: pdfplumber | pymupdf
