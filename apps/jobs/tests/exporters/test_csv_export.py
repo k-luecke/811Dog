@@ -126,7 +126,8 @@ def sample_views() -> list[TicketView]:
             expire_date=date(2026, 5, 14),
             utility_statuses=[
                 {"code": "MWS", "name": "Metro Water", "facility": "Water",
-                 "status": "delayed", "is_late": False},
+                 "status": "delayed", "last_response": "Locate Delayed",
+                 "is_late": False},
             ],
             blocking_codes=["MWS"],
         ),
@@ -158,7 +159,7 @@ def sample_views() -> list[TicketView]:
             expire_date=date(2026, 5, 20),
             utility_statuses=[],
         ),
-        _mk(  # T7 — active, expiring in 2 days, 1 late + 1 blocked
+        _mk(  # T7 — active, expiring in 2 days, 1 late + 1 in-conflict
             ticket_number="T7",
             excavator="NORTH RIDGE CONTRACTORS",
             call_date=date(2026, 4, 8),
@@ -167,7 +168,8 @@ def sample_views() -> list[TicketView]:
                 {"code": "B01", "name": "ATT", "facility": "Phone",
                  "status": "pending", "is_late": True},
                 {"code": "MWS", "name": "Metro Water", "facility": "Water",
-                 "status": "not_clear", "is_late": False},
+                 "status": "not_clear", "last_response": "In Conflict",
+                 "is_late": False},
             ],
             has_late_utility=True,
             late_codes=["B01"],
@@ -252,7 +254,10 @@ def test_blocked_csv(tmp_path, sample_views):
     assert {r["ticket_number"] for r in rows} == {"T3", "T7"}
     t3 = next(r for r in rows if r["ticket_number"] == "T3")
     assert t3["blocking_utility_codes"] == "MWS"
-    assert t3["utility_summary"] == "1 blocked (MWS)"
+    assert t3["utility_summary"] == "1 delayed (MWS)"
+    t7 = next(r for r in rows if r["ticket_number"] == "T7")
+    # T7 has one late + one in-conflict; in-conflict comes before delayed in output
+    assert t7["utility_summary"] == "1 late (B01), 1 in conflict (MWS)"
 
 
 def test_new_24h_csv(tmp_path, sample_views):
@@ -507,7 +512,8 @@ class TestUtilitySummary:
         ]
         assert utility_summary(statuses) == "3 clear, 1 late (GFI)"
 
-    def test_clear_plus_blocked(self):
+    def test_clear_plus_blocked_fallback_when_no_last_response(self):
+        """Legacy records with no `last_response` fall back to the generic 'blocked' label."""
         statuses = [
             {"code": "A", "status": "clear", "is_late": False},
             {"code": "B", "status": "clear", "is_late": False},
@@ -516,12 +522,61 @@ class TestUtilitySummary:
         ]
         assert utility_summary(statuses) == "2 clear, 2 blocked (MWS, MCI)"
 
-    def test_late_and_blocked(self):
+    def test_blocked_grouped_by_specific_reason(self):
+        """Portal reasons become explicit labels: delayed / in conflict / cannot locate / no response."""
+        statuses = [
+            {"code": "A", "status": "clear", "is_late": False},
+            {"code": "B01", "status": "not_clear",
+             "last_response": "In Conflict", "is_late": False},
+            {"code": "MWS", "status": "delayed",
+             "last_response": "Locate Delayed", "is_late": False},
+            {"code": "NES", "status": "not_clear",
+             "last_response": "Cannot Locate - Contact Utility", "is_late": False},
+            {"code": "ATT", "status": "not_clear",
+             "last_response": "No Response", "is_late": False},
+        ]
+        # Ordering: in conflict → cannot locate → no response → delayed
+        assert utility_summary(statuses) == (
+            "1 clear, 1 in conflict (B01), 1 cannot locate (NES), "
+            "1 no response (ATT), 1 delayed (MWS)"
+        )
+
+    def test_multiple_codes_in_same_blocked_reason(self):
+        statuses = [
+            {"code": "MWS", "status": "delayed",
+             "last_response": "Locate Delayed", "is_late": False},
+            {"code": "MWS", "status": "delayed",
+             "last_response": "Locate Delayed", "is_late": False},
+            {"code": "GFI", "status": "not_clear",
+             "last_response": "In Conflict", "is_late": False},
+        ]
+        assert utility_summary(statuses) == (
+            "1 in conflict (GFI), 2 delayed (MWS, MWS)"
+        )
+
+    def test_late_and_blocked_with_reason(self):
         statuses = [
             {"code": "B01", "status": "pending", "is_late": True},
-            {"code": "MWS", "status": "not_clear", "is_late": False},
+            {"code": "MWS", "status": "not_clear",
+             "last_response": "In Conflict", "is_late": False},
         ]
-        assert utility_summary(statuses) == "1 late (B01), 1 blocked (MWS)"
+        assert utility_summary(statuses) == "1 late (B01), 1 in conflict (MWS)"
+
+    def test_unrecognized_last_response_falls_back_to_blocked(self):
+        """If the portal emits a response we haven't mapped, don't drop it — label it 'blocked'."""
+        statuses = [
+            {"code": "MWS", "status": "not_clear",
+             "last_response": "Some New Response Text", "is_late": False},
+        ]
+        assert utility_summary(statuses) == "1 blocked (MWS)"
+
+    def test_last_response_whitespace_insensitive(self):
+        """Extra whitespace around response text shouldn't break the label lookup."""
+        statuses = [
+            {"code": "MWS", "status": "delayed",
+             "last_response": "  Locate   Delayed  ", "is_late": False},
+        ]
+        assert utility_summary(statuses) == "1 delayed (MWS)"
 
     def test_unknown_status_skipped(self):
         statuses = [

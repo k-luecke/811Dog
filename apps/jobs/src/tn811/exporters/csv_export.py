@@ -439,12 +439,45 @@ def write_exports(
 # ── Helpers — derivations ─────────────────────────────────────────────────────
 
 
+# Maps the portal's `last_response` text on a blocked utility row to the
+# short label we emit in `utility_summary`. Any response text not in this
+# map falls back to the generic "blocked" label.
+_BLOCKED_REASON_LABELS: dict[str, str] = {
+    "locate delayed": "delayed",
+    "in conflict": "in conflict",
+    "cannot locate - contact utility": "cannot locate",
+    "no response": "no response",
+}
+
+# Order in which blocked sub-groups appear in the summary string. Most
+# actionable reasons surface first so a supervisor scanning the column
+# sees genuine conflicts before mere delays (which dominate by volume).
+_BLOCKED_REASON_ORDER: tuple[str, ...] = (
+    "in conflict",
+    "cannot locate",
+    "no response",
+    "delayed",
+    "blocked",  # fallback bucket for unmapped response text
+)
+
+
+def _blocked_reason(last_response: str | None) -> str:
+    if not last_response:
+        return "blocked"
+    key = " ".join(last_response.strip().lower().split())
+    return _BLOCKED_REASON_LABELS.get(key, "blocked")
+
+
 def utility_summary(statuses: Iterable[dict]) -> str:
     """Human-readable one-line summary of the utility response mix for a ticket.
 
-    Prefers naming specific codes for late and blocked states; pending codes are
-    counted but not individually named. Statuses not mapped to clear/late/pending/
-    blocked are skipped silently.
+    Blocked utilities are grouped by the specific portal response reason
+    (delayed / in conflict / cannot locate / no response) rather than
+    collapsed into a single "blocked" bucket — a Locate-Delayed utility is
+    usually a wait, while In-Conflict or Cannot-Locate require active
+    coordination. Codes are named for late and for each blocked sub-group;
+    pending codes are counted but not individually named. Statuses not
+    mapped to clear/late/pending/blocked are skipped silently.
     """
     statuses = list(statuses or [])
     if not statuses:
@@ -452,7 +485,7 @@ def utility_summary(statuses: Iterable[dict]) -> str:
 
     clear_count = 0
     late_codes: list[str] = []
-    blocked_codes: list[str] = []
+    blocked_by_reason: dict[str, list[str]] = {}
     pending_count = 0
 
     for s in statuses:
@@ -466,8 +499,10 @@ def utility_summary(statuses: Iterable[dict]) -> str:
         elif status == UTIL_STATUS_PENDING:
             pending_count += 1
         elif status in (UTIL_STATUS_DELAYED, UTIL_STATUS_NOT_CLEAR):
-            if code:
-                blocked_codes.append(code)
+            if not code:
+                continue
+            reason = _blocked_reason(s.get("last_response"))
+            blocked_by_reason.setdefault(reason, []).append(code)
         # unknown: ignore in summary
 
     parts: list[str] = []
@@ -475,8 +510,10 @@ def utility_summary(statuses: Iterable[dict]) -> str:
         parts.append(f"{clear_count} clear")
     if late_codes:
         parts.append(f"{len(late_codes)} late ({', '.join(late_codes)})")
-    if blocked_codes:
-        parts.append(f"{len(blocked_codes)} blocked ({', '.join(blocked_codes)})")
+    for reason in _BLOCKED_REASON_ORDER:
+        if reason in blocked_by_reason:
+            codes = blocked_by_reason[reason]
+            parts.append(f"{len(codes)} {reason} ({', '.join(codes)})")
     if pending_count:
         parts.append(f"{pending_count} pending")
     return ", ".join(parts)
