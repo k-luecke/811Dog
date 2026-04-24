@@ -35,6 +35,24 @@ def detail_html_cancelled() -> str:
 
 
 @pytest.fixture
+def detail_html_live_all_clear() -> str:
+    """Live portal format — all utilities Closed with clear/located responses."""
+    return (HTML_DIR / "detail_live_all_clear.html").read_text()
+
+
+@pytest.fixture
+def detail_html_live_gfi_open() -> str:
+    """Live portal format — GFI and U01 still Open (no response)."""
+    return (HTML_DIR / "detail_live_utility_open.html").read_text()
+
+
+@pytest.fixture
+def detail_html_live_mixed() -> str:
+    """Live portal format — delayed GFI, in-conflict ATT, Open MWS."""
+    return (HTML_DIR / "detail_live_mixed.html").read_text()
+
+
+@pytest.fixture
 def sample_ticket_text() -> str:
     """Simulate raw text from a TN811 ticket PDF."""
     return """
