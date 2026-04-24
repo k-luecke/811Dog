@@ -673,6 +673,72 @@ def reset_reminders(config_path: str, confirm: bool):
     click.echo(f"Deleted {count} reminder event(s).")
 
 
+# ── export-kmz ────────────────────────────────────────────────────────────────
+
+@main.command("export-kmz")
+@click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
+@click.option(
+    "--out",
+    "out_path",
+    default=None,
+    help="Output .kmz path (defaults to <paths.exports_dir>/ops_snapshot.kmz).",
+)
+@click.option(
+    "--no-desktop",
+    is_flag=True,
+    help="Skip the Windows desktop mirror for this run.",
+)
+def export_kmz(config_path: str, out_path: str | None, no_desktop: bool):
+    """Write a Google Earth (.kmz) operational view of the relevant ticket pool."""
+    cfg = _load_app(config_path)
+
+    from tn811.db import get_session
+    from tn811.exporters.kmz_export import DEFAULT_OUT_PATH, export as run_kmz_export
+
+    if out_path:
+        target = Path(out_path)
+    else:
+        # Respect cfg.paths.exports_dir so tests and production honor the same root
+        target = Path(cfg.paths.exports_dir) / DEFAULT_OUT_PATH.name
+
+    mirror_dir: Path | None = None
+    if not no_desktop and cfg.exports.desktop_mirror_enabled and cfg.exports.desktop_mirror_path:
+        mirror_dir = Path(cfg.exports.desktop_mirror_path)
+
+    click.echo(
+        f"Writing KMZ to {target}"
+        + (f" [→ mirror {mirror_dir / target.name}]" if mirror_dir else "")
+    )
+    with get_session() as session:
+        manifest = run_kmz_export(
+            session,
+            target,
+            desktop_mirror_path=mirror_dir,
+        )
+
+    size = target.stat().st_size if target.exists() else 0
+    size_str = f"{size / 1024:.0f} KB" if size < 1024 * 1024 else f"{size / (1024 * 1024):.1f} MB"
+    click.echo(
+        f"\n{manifest.total_placemarks:,} placemarks across folders "
+        f"({size_str} on disk)."
+    )
+    click.echo(
+        f"  Active relevant:        {manifest.active_relevant:>5}"
+    )
+    click.echo(
+        f"  Cancelled relevant 14d: {manifest.cancelled_relevant_14d:>5}"
+    )
+    click.echo(
+        f"  Meridian non-relevant:     {manifest.contractor_other:>5}"
+    )
+    click.echo(
+        f"  Skipped (no coords):  {manifest.skipped_no_coords:>5}"
+    )
+    click.echo(f"\nOutput: {target}")
+    if mirror_dir:
+        click.echo(f"Mirror: {mirror_dir / target.name}")
+
+
 # ── rescore ───────────────────────────────────────────────────────────────────
 
 @main.command("rescore")
