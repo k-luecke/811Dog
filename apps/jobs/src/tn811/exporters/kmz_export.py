@@ -46,6 +46,7 @@ import simplekml
 from jinja2 import Environment
 from sqlalchemy.orm import Session
 
+from tn811.connectors.nashdigs import NashDigsPackage, load_cached
 from tn811.exporters.csv_export import (
     CT,
     TicketView,
@@ -54,6 +55,7 @@ from tn811.exporters.csv_export import (
     ticket_view_from_orm,
 )
 from tn811.models import (
+    ORMNashDigsProject,
     ORMTicket,
     UTIL_STATUS_DELAYED,
     UTIL_STATUS_NOT_CLEAR,
@@ -364,6 +366,19 @@ class KmzManifest:
     cancelled_gfiber_14d: int
     ervin_non_gfiber: int
     dig_zone_circles: int = 0
+    nashdigs_active: int = 0
+    nashdigs_committed: int = 0
+    nashdigs_recent: int = 0
+    conflict_features: int = 0
+
+
+# NashDigs rendering palette (fill alpha applied via _apply_alpha)
+_NASHDIGS_ACTIVE_COLOR = simplekml.Color.green         # Status='Started'
+_NASHDIGS_COMMITTED_COLOR = simplekml.Color.blue        # Status='Committed'
+_NASHDIGS_RECENT_COLOR = simplekml.Color.gray           # ActEnd within 30d
+_CONFLICT_FILL_ALPHA = 0.10
+_CONFLICT_OUTLINE_ALPHA = 0.40
+_NASHDIGS_LINE_WIDTH = 3
 
 
 def export(
@@ -383,18 +398,79 @@ def export(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     views_gfiber, views_ervin_non_gf = _load_views(session, now_ct)
+    nashdigs_google, nashdigs_others = _load_nashdigs(session)
+    package_ticket_counts = _load_ticket_package_counts(session)
 
     manifest = _build_and_save(
         views_gfiber=views_gfiber,
         views_ervin_non_gf=views_ervin_non_gf,
         out_path=out_path,
         now_ct=now_ct,
+        nashdigs_google=nashdigs_google,
+        nashdigs_others=nashdigs_others,
+        package_ticket_counts=package_ticket_counts,
     )
 
     if desktop_mirror_path:
         _mirror_kmz(out_path, Path(desktop_mirror_path))
 
     return manifest
+
+
+def _load_nashdigs(
+    session: Session,
+) -> tuple[list[NashDigsPackage], list[NashDigsPackage]]:
+    """Return (google_packages, non_google_packages) from the cache.
+
+    Non-Google packages seed the optional Conflict Awareness layer. Empty
+    list when the user hasn't run `fetch-nashdigs --all-owners`.
+    """
+    all_cached = load_cached(session)
+    google: list[NashDigsPackage] = []
+    others: list[NashDigsPackage] = []
+    for p in all_cached:
+        if p.owner and "GOOGLE" in p.owner.upper():
+            google.append(p)
+        else:
+            others.append(p)
+    return google, others
+
+
+def _load_ticket_package_counts(
+    session: Session,
+) -> dict[str, dict[str, int]]:
+    """Aggregate counts of GFiber tickets per NashDigs project_name.
+
+    Returns: {project_name: {'total': N, 'high': n, 'medium': n, 'low': n, ...}}
+    """
+    from collections import defaultdict
+
+    rows = (
+        session.query(
+            ORMTicket.nashdigs_project_name,
+            ORMTicket.nashdigs_match_confidence,
+            ORMTicket.is_cancelled,
+        )
+        .filter(
+            ORMTicket.is_gfiber_related == True,  # noqa: E712
+            ORMTicket.nashdigs_project_name.isnot(None),
+        )
+        .all()
+    )
+    counts: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"total": 0, "active": 0, "cancelled": 0,
+                 "high": 0, "medium": 0, "low": 0}
+    )
+    for project_name, confidence, cancelled in rows:
+        c = counts[project_name]
+        c["total"] += 1
+        if cancelled:
+            c["cancelled"] += 1
+        else:
+            c["active"] += 1
+        if confidence in ("high", "medium", "low"):
+            c[confidence] += 1
+    return counts
 
 
 def _load_views(
@@ -422,6 +498,9 @@ def _build_and_save(
     views_ervin_non_gf: list[TicketView],
     out_path: Path,
     now_ct: datetime,
+    nashdigs_google: list[NashDigsPackage] | None = None,
+    nashdigs_others: list[NashDigsPackage] | None = None,
+    package_ticket_counts: dict[str, dict[str, int]] | None = None,
 ) -> KmzManifest:
     """Assemble the full KML tree and write the .kmz."""
     today = now_ct.date()
@@ -580,6 +659,22 @@ def _build_and_save(
             total_placemarks += 1
         folder_counts["ervin_non_gfiber"] = len(views_ervin_non_gf)
 
+    # ── NashDigs Google packages ─────────────────────────────────────────────
+    nashdigs_counts = {"active": 0, "committed": 0, "recent": 0, "conflict": 0}
+    if nashdigs_google:
+        nashdigs_counts.update(_add_nashdigs_google_folder(
+            kml, nashdigs_google, today, package_ticket_counts or {}
+        ))
+        folder_counts["nashdigs_active"] = nashdigs_counts["active"]
+        folder_counts["nashdigs_committed"] = nashdigs_counts["committed"]
+        folder_counts["nashdigs_recent"] = nashdigs_counts["recent"]
+
+    # ── Conflict awareness (non-Google projects) ─────────────────────────────
+    if nashdigs_others:
+        count = _add_conflict_awareness_folder(kml, nashdigs_others)
+        nashdigs_counts["conflict"] = count
+        folder_counts["conflict_awareness"] = count
+
     kml.savekmz(str(out_path))
 
     return KmzManifest(
@@ -592,6 +687,10 @@ def _build_and_save(
         cancelled_gfiber_14d=len(cancelled_14d),
         ervin_non_gfiber=len(views_ervin_non_gf),
         dig_zone_circles=circle_total,
+        nashdigs_active=nashdigs_counts.get("active", 0),
+        nashdigs_committed=nashdigs_counts.get("committed", 0),
+        nashdigs_recent=nashdigs_counts.get("recent", 0),
+        conflict_features=nashdigs_counts.get("conflict", 0),
     )
 
 
@@ -675,6 +774,262 @@ def _add_circle(
         description=_render_popup(view),
     )
     poly.style = styles.circle(base_color)
+
+
+# ── NashDigs rendering ────────────────────────────────────────────────────────
+
+
+def _add_nashdigs_google_folder(
+    kml: simplekml.Kml,
+    packages: list[NashDigsPackage],
+    today: date,
+    ticket_counts: dict[str, dict[str, int]],
+) -> dict[str, int]:
+    """Render Google-owned NashDigs packages as three sub-folders by status."""
+    parent = kml.newfolder(name="NashDigs Packages (Google-owned)")
+    parent.visibility = 0
+
+    recent_cutoff = today - timedelta(days=30)
+
+    active_pkgs: list[NashDigsPackage] = []
+    committed_pkgs: list[NashDigsPackage] = []
+    recent_pkgs: list[NashDigsPackage] = []
+
+    for p in packages:
+        # "Recently completed" takes priority over status: a package whose
+        # ActEnd is in the last 30 days is worth showing even if Status still
+        # says 'Started' (feeds lag reality).
+        if p.act_end_date and p.act_end_date >= recent_cutoff and p.act_end_date <= today:
+            recent_pkgs.append(p)
+        elif (p.status or "").lower() == "started":
+            active_pkgs.append(p)
+        elif (p.status or "").lower() == "committed":
+            committed_pkgs.append(p)
+        else:
+            # Anything else (rare) — tuck under the Active bucket
+            active_pkgs.append(p)
+
+    active_folder = parent.newfolder(name=f"Active packages ({len(active_pkgs)})")
+    active_folder.visibility = 0
+    for p in active_pkgs:
+        _add_nashdigs_package(active_folder, p, _NASHDIGS_ACTIVE_COLOR, ticket_counts)
+
+    committed_folder = parent.newfolder(
+        name=f"Committed — not yet started ({len(committed_pkgs)})"
+    )
+    committed_folder.visibility = 0
+    for p in committed_pkgs:
+        _add_nashdigs_package(committed_folder, p, _NASHDIGS_COMMITTED_COLOR, ticket_counts)
+
+    recent_folder = parent.newfolder(
+        name=f"Recently completed — last 30 days ({len(recent_pkgs)})"
+    )
+    recent_folder.visibility = 0
+    for p in recent_pkgs:
+        _add_nashdigs_package(recent_folder, p, _NASHDIGS_RECENT_COLOR, ticket_counts)
+
+    parent.name = (
+        f"NashDigs Packages (Google-owned) ({len(active_pkgs) + len(committed_pkgs) + len(recent_pkgs)})"
+    )
+    return {
+        "active": len(active_pkgs),
+        "committed": len(committed_pkgs),
+        "recent": len(recent_pkgs),
+    }
+
+
+def _add_nashdigs_package(
+    folder: simplekml.Folder,
+    pkg: NashDigsPackage,
+    base_color: str,
+    ticket_counts: dict[str, dict[str, int]],
+) -> None:
+    """Add a single NashDigs package's geometry + popup to the given folder."""
+    geom = pkg.geometry_geojson or {}
+    gtype = geom.get("type")
+    coords = geom.get("coordinates") or []
+    if not gtype or not coords:
+        return
+
+    description = _render_package_popup(pkg, ticket_counts.get(pkg.project_name, {}))
+
+    if gtype == "MultiLineString":
+        placemark = folder.newmultigeometry(name=pkg.project_name)
+        for segment in coords:
+            if len(segment) < 2:
+                continue
+            placemark.newlinestring(
+                coords=[(pt[0], pt[1]) for pt in segment],
+            )
+        placemark.description = description
+    elif gtype == "LineString":
+        placemark = folder.newlinestring(
+            name=pkg.project_name,
+            coords=[(pt[0], pt[1]) for pt in coords],
+            description=description,
+        )
+    elif gtype == "Polygon":
+        # outerboundary = first ring
+        if not coords or not coords[0]:
+            return
+        placemark = folder.newpolygon(
+            name=pkg.project_name,
+            outerboundaryis=[(pt[0], pt[1]) for pt in coords[0]],
+            description=description,
+        )
+    elif gtype == "MultiPolygon":
+        placemark = folder.newmultigeometry(name=pkg.project_name)
+        for polygon in coords:
+            if not polygon or not polygon[0]:
+                continue
+            placemark.newpolygon(
+                outerboundaryis=[(pt[0], pt[1]) for pt in polygon[0]],
+            )
+        placemark.description = description
+    else:
+        return
+
+    # Style inline — NashDigs styles are distinct from ticket pin styles
+    style = simplekml.Style()
+    style.linestyle.color = base_color
+    style.linestyle.width = _NASHDIGS_LINE_WIDTH
+    style.polystyle.color = _apply_alpha(base_color, 0.25)
+    style.polystyle.fill = 1
+    style.polystyle.outline = 1
+    style.labelstyle.scale = 0.9
+    placemark.style = style
+
+
+def _add_conflict_awareness_folder(
+    kml: simplekml.Kml,
+    packages: list[NashDigsPackage],
+) -> int:
+    """Render non-Google NashDigs features as a subtle gray coordination layer."""
+    parent = kml.newfolder(
+        name=f"Conflict awareness (non-Google projects) ({len(packages)})"
+    )
+    parent.visibility = 0
+
+    rendered = 0
+    for p in packages:
+        geom = p.geometry_geojson or {}
+        gtype = geom.get("type")
+        coords = geom.get("coordinates") or []
+        if not gtype or not coords:
+            continue
+
+        description = _render_conflict_popup(p)
+        style = simplekml.Style()
+        gray = simplekml.Color.gray
+        style.linestyle.color = _apply_alpha(gray, _CONFLICT_OUTLINE_ALPHA)
+        style.linestyle.width = 2
+        style.polystyle.color = _apply_alpha(gray, _CONFLICT_FILL_ALPHA)
+        style.polystyle.fill = 1
+        style.polystyle.outline = 1
+        style.labelstyle.scale = 0.0  # labels would clutter at this density
+
+        name = (p.project_name or f"Project {p.project_id}")[:60]
+
+        if gtype == "MultiLineString":
+            pm = parent.newmultigeometry(name=name)
+            for seg in coords:
+                if len(seg) < 2:
+                    continue
+                pm.newlinestring(coords=[(pt[0], pt[1]) for pt in seg])
+            pm.description = description
+            pm.style = style
+            rendered += 1
+        elif gtype == "LineString":
+            pm = parent.newlinestring(
+                name=name,
+                coords=[(pt[0], pt[1]) for pt in coords],
+                description=description,
+            )
+            pm.style = style
+            rendered += 1
+        elif gtype == "Polygon":
+            if coords and coords[0]:
+                pm = parent.newpolygon(
+                    name=name,
+                    outerboundaryis=[(pt[0], pt[1]) for pt in coords[0]],
+                    description=description,
+                )
+                pm.style = style
+                rendered += 1
+        elif gtype == "MultiPolygon":
+            pm = parent.newmultigeometry(name=name)
+            any_ring = False
+            for poly in coords:
+                if poly and poly[0]:
+                    pm.newpolygon(
+                        outerboundaryis=[(pt[0], pt[1]) for pt in poly[0]],
+                    )
+                    any_ring = True
+            if any_ring:
+                pm.description = description
+                pm.style = style
+                rendered += 1
+    return rendered
+
+
+def _render_package_popup(
+    pkg: NashDigsPackage,
+    ticket_counts: dict[str, int],
+) -> str:
+    """HTML popup for a Google-owned NashDigs package."""
+    import html as _html
+    rows = [
+        ("Package", pkg.project_name),
+        ("Owner", pkg.owner),
+        ("Status", pkg.status or ""),
+        ("Facility", pkg.facility_type or ""),
+        ("Project Type", pkg.project_type or ""),
+        ("Est Start", pkg.est_start_date.isoformat() if pkg.est_start_date else ""),
+        ("Est End", pkg.est_end_date.isoformat() if pkg.est_end_date else ""),
+        ("Act Start", pkg.act_start_date.isoformat() if pkg.act_start_date else ""),
+        ("Act End", pkg.act_end_date.isoformat() if pkg.act_end_date else ""),
+        ("Council District", pkg.council_district or ""),
+    ]
+    trs = "".join(
+        f"<tr><td><b>{_html.escape(str(k))}:</b></td><td>{_html.escape(str(v))}</td></tr>"
+        for k, v in rows
+    )
+    ticket_block = ""
+    if ticket_counts:
+        tc = ticket_counts
+        ticket_block = (
+            f"<h4>Ervin GFiber tickets tagged to this package</h4>"
+            f"<table><tr><td><b>Total:</b></td><td>{tc.get('total', 0)}</td></tr>"
+            f"<tr><td><b>Active:</b></td><td>{tc.get('active', 0)}</td></tr>"
+            f"<tr><td><b>High confidence:</b></td><td>{tc.get('high', 0)}</td></tr>"
+            f"<tr><td><b>Medium:</b></td><td>{tc.get('medium', 0)}</td></tr>"
+            f"<tr><td><b>Low (review):</b></td><td>{tc.get('low', 0)}</td></tr>"
+            f"</table>"
+        )
+    desc_block = ""
+    if pkg.description:
+        desc_block = f"<h4>Description</h4><p>{_html.escape(pkg.description)}</p>"
+    return f"<h3>{_html.escape(pkg.project_name)}</h3><table>{trs}</table>{ticket_block}{desc_block}"
+
+
+def _render_conflict_popup(pkg: NashDigsPackage) -> str:
+    """Minimal popup for non-Google NashDigs features."""
+    import html as _html
+    rows = [
+        ("Project", pkg.project_name),
+        ("Owner", pkg.owner),
+        ("Department", pkg.department or ""),
+        ("Facility", pkg.facility_type or ""),
+        ("Type", pkg.project_type or ""),
+        ("Status", pkg.status or ""),
+        ("Act Start", pkg.act_start_date.isoformat() if pkg.act_start_date else ""),
+        ("Act End", pkg.act_end_date.isoformat() if pkg.act_end_date else ""),
+    ]
+    trs = "".join(
+        f"<tr><td><b>{_html.escape(str(k))}:</b></td><td>{_html.escape(str(v))}</td></tr>"
+        for k, v in rows
+    )
+    return f"<h3>{_html.escape(pkg.project_name or '(unnamed)')}</h3><table>{trs}</table>"
 
 
 # ── Desktop mirror ────────────────────────────────────────────────────────────

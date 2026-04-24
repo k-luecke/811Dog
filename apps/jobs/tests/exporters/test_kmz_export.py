@@ -670,6 +670,171 @@ def test_circle_ring_vertices_match_expected_geometry(tmp_path, sample_views):
     assert tuples[0] == tuples[-1]  # ring is closed
 
 
+# ── NashDigs package layer ────────────────────────────────────────────────────
+
+
+def _fake_google_pkg(
+    name: str = "BNA104a",
+    *,
+    status: str = "Started",
+    act_start: date | None = date(2026, 1, 1),
+    act_end: date | None = date(2026, 6, 1),
+    project_id: int = 49701,
+    description: str | None = None,
+):
+    from tn811.connectors.nashdigs import NashDigsPackage
+    return NashDigsPackage(
+        project_id=project_id,
+        project_name=name,
+        facility_type="Communication",
+        project_type="Underground",
+        description=description,
+        owner="Google",
+        department="Google",
+        division="Google",
+        status=status,
+        council_district="22",
+        est_start_date=act_start,
+        est_end_date=act_end,
+        act_start_date=act_start,
+        act_end_date=act_end,
+        geometry_geojson={
+            "type": "MultiLineString",
+            "coordinates": [[[-86.73, 36.10], [-86.73, 36.101]]],
+        },
+    )
+
+
+def _fake_conflict_pkg(
+    owner: str = "Metro Nashville",
+    name: str = "Main St Water Main",
+    project_id: int = 99001,
+):
+    from tn811.connectors.nashdigs import NashDigsPackage
+    return NashDigsPackage(
+        project_id=project_id,
+        project_name=name,
+        facility_type="Water",
+        project_type="Lay & Deed",
+        description=None,
+        owner=owner,
+        department="Metro Water Services",
+        division="Development Services",
+        status="Started",
+        council_district="19",
+        est_start_date=None,
+        est_end_date=None,
+        act_start_date=date(2026, 4, 1),
+        act_end_date=None,
+        geometry_geojson={
+            "type": "Polygon",
+            "coordinates": [[
+                [-86.73, 36.10], [-86.725, 36.10], [-86.725, 36.105],
+                [-86.73, 36.105], [-86.73, 36.10],
+            ]],
+        },
+    )
+
+
+def test_google_packages_split_into_three_subfolders(tmp_path, sample_views):
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+        nashdigs_google=[
+            _fake_google_pkg(name="BNA100a", status="Started", project_id=1),
+            _fake_google_pkg(name="BNA100b", status="Committed", project_id=2,
+                             act_start=date(2026, 5, 1), act_end=date(2026, 9, 1)),
+            # Recently-completed (ActEnd within 30 days of NOW_CT 2026-04-24)
+            _fake_google_pkg(name="BNA100c", status="Started", project_id=3,
+                             act_start=date(2026, 1, 1), act_end=date(2026, 4, 15)),
+        ],
+    )
+    root = _parse_kmz(out)
+    doc = root.find("kml:Document", _NS)
+    pkg_parent = next(
+        f for f in doc.findall("kml:Folder", _NS)
+        if "NashDigs Packages" in (f.findtext("kml:name", default="", namespaces=_NS) or "")
+    )
+    sub_names = [
+        f.findtext("kml:name", default="", namespaces=_NS)
+        for f in pkg_parent.findall("kml:Folder", _NS)
+    ]
+    assert any("Active packages" in n for n in sub_names)
+    assert any("Committed" in n for n in sub_names)
+    assert any("Recently completed" in n for n in sub_names)
+
+
+def test_conflict_folder_only_appears_when_non_google_packages_present(tmp_path, sample_views):
+    """Without non-Google packages, the conflict folder must not be created."""
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+        nashdigs_google=[_fake_google_pkg()],
+        nashdigs_others=[],
+    )
+    root = _parse_kmz(out)
+    doc = root.find("kml:Document", _NS)
+    names = [
+        f.findtext("kml:name", default="", namespaces=_NS)
+        for f in doc.findall("kml:Folder", _NS)
+    ]
+    assert not any("Conflict awareness" in n for n in names)
+
+
+def test_conflict_folder_renders_polygon_and_line_features(tmp_path, sample_views):
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+        nashdigs_google=[],
+        nashdigs_others=[
+            _fake_conflict_pkg(name="Main St Water Main", project_id=99001),
+        ],
+    )
+    root = _parse_kmz(out)
+    doc = root.find("kml:Document", _NS)
+    conflict = next(
+        f for f in doc.findall("kml:Folder", _NS)
+        if "Conflict awareness" in (f.findtext("kml:name", default="", namespaces=_NS) or "")
+    )
+    assert conflict.findtext("kml:visibility", default="1", namespaces=_NS) == "0"
+    polygons = conflict.findall(".//kml:Polygon", _NS)
+    assert len(polygons) == 1
+
+
+def test_package_popup_includes_ticket_counts(tmp_path, sample_views):
+    out = tmp_path / "out.kmz"
+    _build_and_save(
+        views_gfiber=sample_views,
+        views_ervin_non_gf=[],
+        out_path=out,
+        now_ct=NOW_CT,
+        nashdigs_google=[_fake_google_pkg(name="BNA999a", project_id=42)],
+        package_ticket_counts={
+            "BNA999a": {"total": 5, "active": 4, "cancelled": 1,
+                        "high": 3, "medium": 1, "low": 1},
+        },
+    )
+    with zipfile.ZipFile(out) as z:
+        kml_text = z.read(
+            next(n for n in z.namelist() if n.endswith(".kml"))
+        ).decode("utf-8")
+    assert "BNA999a" in kml_text
+    assert "Ervin GFiber tickets tagged" in kml_text
+    # simplekml XML-escapes the HTML description, so the inner `>5<` of the
+    # popup becomes `&gt;5&lt;` inside the KML text. Match that form.
+    assert "&gt;5&lt;" in kml_text  # total
+    assert "&gt;3&lt;" in kml_text  # high confidence
+
+
 def test_header_description_mentions_circle_layer(tmp_path, sample_views):
     out = tmp_path / "out.kmz"
     _build_and_save(
