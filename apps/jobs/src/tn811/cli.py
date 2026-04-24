@@ -403,6 +403,43 @@ def export_dashboard(config_path: str):
     _do_build_json(config_path)
 
 
+# ── export-csv ────────────────────────────────────────────────────────────────
+
+@main.command("export-csv")
+@click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
+@click.option(
+    "--out",
+    "out_dir",
+    default=None,
+    help="Output directory (defaults to paths.exports_dir from config).",
+)
+@click.option(
+    "--sub-slices/--no-sub-slices",
+    default=False,
+    help="Also emit by_sub/<slug>/ folders per active excavator.",
+)
+def export_csv(config_path: str, out_dir: str | None, sub_slices: bool):
+    """Write the supervisor CSV bundle (nine master files + optional per-sub slices)."""
+    cfg = _load_app(config_path)
+
+    from tn811.db import get_session
+    from tn811.exporters.csv_export import export as run_export
+
+    target = Path(out_dir) if out_dir else Path(cfg.paths.exports_dir)
+    target.mkdir(parents=True, exist_ok=True)
+
+    click.echo(f"Writing CSV export to {target} {'[+ sub slices]' if sub_slices else ''}")
+    with get_session() as session:
+        manifest = run_export(session, target, sub_slices=sub_slices)
+
+    click.echo(f"\nWrote {len(manifest.master_files)} master file(s):")
+    for f in manifest.master_files:
+        click.echo(f"  {f.name:<34}  {f.rows:>7,} rows")
+    if manifest.sub_slice_count:
+        click.echo(f"\nPer-sub slices: {manifest.sub_slice_count} folder(s) in by_sub/")
+    click.echo(f"\nManifest: {target / 'MANIFEST.txt'}")
+
+
 # ── backfill ───────────────────────────────────────────────────────────────────
 
 @main.command()
