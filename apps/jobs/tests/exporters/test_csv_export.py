@@ -49,6 +49,8 @@ def _mk(
     is_ready_to_dig: bool = False,
     county: str = "Davidson County",
     remarks: str = "",
+    latitude: float | None = None,
+    longitude: float | None = None,
 ) -> TicketView:
     utility_statuses = utility_statuses or []
     days_until_expire = (expire_date - TODAY).days if expire_date else None
@@ -87,6 +89,8 @@ def _mk(
         is_cancelled=is_cancelled,
         status=status,
         remarks=remarks,
+        latitude=latitude,
+        longitude=longitude,
         utility_statuses=utility_statuses,
     )
 
@@ -325,6 +329,33 @@ def test_utility_detail_csv(tmp_path, sample_views):
     # days_since_call for T4 (called today) is 0
     t4_rows = [r for r in rows if r["ticket_number"] == "T4"]
     assert all(r["days_since_call"] == "0" for r in t4_rows)
+
+
+def test_latitude_longitude_rendered_when_populated(tmp_path):
+    views = [
+        _mk(
+            ticket_number="GEO001",
+            excavator="NORTH RIDGE CONTRACTORS",
+            call_date=date(2026, 4, 20),
+            expire_date=date(2026, 5, 1),
+            latitude=35.891968,
+            longitude=-86.417549,
+        ),
+        _mk(  # Second row with no coords renders empty strings
+            ticket_number="GEO002",
+            excavator="NORTH RIDGE CONTRACTORS",
+            call_date=date(2026, 4, 20),
+            expire_date=date(2026, 5, 1),
+        ),
+    ]
+    write_exports(views, tmp_path, sub_slices=False, now_ct=NOW_CT)
+    _, rows = _read_csv(tmp_path / "relevant_active.csv")
+    geo = next(r for r in rows if r["ticket_number"] == "GEO001")
+    assert geo["latitude"] == "35.891968"
+    assert geo["longitude"] == "-86.417549"
+    no_geo = next(r for r in rows if r["ticket_number"] == "GEO002")
+    assert no_geo["latitude"] == ""
+    assert no_geo["longitude"] == ""
 
 
 def test_master_file_names_match_constant(tmp_path, sample_views):

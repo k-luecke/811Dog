@@ -127,6 +127,14 @@ class DetailPage:
         "done for": "done_for",
         "done for company": "done_for",
         "work done for": "done_for",
+        # Geographic coordinates from the Work Information block. The portal
+        # emits two point pairs per ticket — the dig path is the line segment
+        # from primary to secondary, which buffers into a usable polygon for
+        # spatial matching against package/permit geometry.
+        "latitude": "latitude",
+        "longitude": "longitude",
+        "secondary lat": "secondary_latitude",
+        "secondary long": "secondary_longitude",
         "work for": "done_for",
         "for company": "done_for",
     }
