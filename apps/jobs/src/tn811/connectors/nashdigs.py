@@ -42,6 +42,11 @@ LINES_QUERY_URL = f"{SERVICE_BASE}/1/query"
 DEFAULT_WHERE = "UPPER(Owner) LIKE '%NORTHSTAR%'"
 DEFAULT_USER_AGENT = "811dog-nashdigs/0.1"
 
+# Layer IDs on the NashDigs FeatureServer
+LAYER_POINTS = 0
+LAYER_LINES = 1
+LAYER_POLYGONS = 2
+
 
 # ── Data class ────────────────────────────────────────────────────────────────
 
@@ -81,6 +86,34 @@ def fetch_target_packages(
     Northstar-owned work, the service would return `exceededTransferLimit: true`
     and we'd need to page via objectIds or resultOffset. For now, one call.
     """
+    return _fetch_layer(LAYER_LINES, where, client)
+
+
+def fetch_non_target_projects(
+    client: httpx.Client | None = None,
+) -> list[NashDigsPackage]:
+    """Pull every non-Northstar project from Lines + Polygons layers.
+
+    Used to seed the KMZ 'Conflict awareness' layer: Metro Water, Stormwater,
+    NES, NDOT, and anyone else digging in the same areas as Northstar. These are
+    larger datasets (~1,290 combined features) but still comfortably within
+    a single FeatureServer response.
+    """
+    non_target_where = "UPPER(Owner) NOT LIKE '%NORTHSTAR%' OR Owner IS NULL"
+    packages: list[NashDigsPackage] = []
+    # Points are maintenance-only and rarely add signal — skip for now.
+    packages.extend(_fetch_layer(LAYER_LINES, non_target_where, client))
+    packages.extend(_fetch_layer(LAYER_POLYGONS, non_target_where, client))
+    return packages
+
+
+def _fetch_layer(
+    layer_id: int,
+    where: str,
+    client: httpx.Client | None,
+) -> list[NashDigsPackage]:
+    """Query a single FeatureServer layer and parse the GeoJSON response."""
+    url = f"{SERVICE_BASE}/{layer_id}/query"
     close_client = False
     if client is None:
         client = httpx.Client(
@@ -99,10 +132,10 @@ def fetch_target_packages(
             "f": "geojson",
         }
         logger.info(
-            "Fetching NashDigs Northstar packages",
-            extra={"url": LINES_QUERY_URL, "where": where},
+            "Fetching NashDigs features",
+            extra={"url": url, "where": where, "layer": layer_id},
         )
-        r = client.get(LINES_QUERY_URL, params=params)
+        r = client.get(url, params=params)
         r.raise_for_status()
         data = r.json()
     finally:
@@ -111,14 +144,15 @@ def fetch_target_packages(
 
     if data.get("exceededTransferLimit"):
         logger.warning(
-            "NashDigs response hit transfer limit — pagination may be needed"
+            "NashDigs response hit transfer limit — pagination may be needed",
+            extra={"layer": layer_id},
         )
 
     features = data.get("features", [])
     packages = [_parse_feature(f) for f in features]
     logger.info(
-        "Parsed NashDigs packages",
-        extra={"count": len(packages)},
+        "Parsed NashDigs features",
+        extra={"layer": layer_id, "count": len(packages)},
     )
     return packages
 
@@ -130,15 +164,18 @@ def upsert_packages(
 ) -> dict[str, int]:
     """Sync the list of packages to the DB. Keyed on project_id.
 
-    Replace-all semantics for the Northstar-owned projection: records currently
-    in the DB that are not in the new list are deleted (Northstar left the
-    project, or it was cancelled). New records inserted; changed records
-    updated; unchanged records skipped.
+    Replace-all semantics SCOPED BY OWNER: stale-deletion considers only
+    existing records whose Owner matches the incoming set. That way a
+    Northstar-only refresh does not wipe cached Metro Nashville conflict
+    records from a previous --all-owners run, and vice versa.
     """
-    existing_rows = {
-        row.project_id: row
-        for row in session.query(ORMNashDigsProject).all()
-    }
+    incoming_owners = {p.owner for p in packages if p.owner}
+    existing_query = session.query(ORMNashDigsProject)
+    if incoming_owners:
+        existing_query = existing_query.filter(
+            ORMNashDigsProject.owner.in_(incoming_owners)
+        )
+    existing_rows = {row.project_id: row for row in existing_query.all()}
     incoming_ids = {p.project_id for p in packages}
 
     stats = {"new": 0, "updated": 0, "unchanged": 0, "deleted": 0}

@@ -737,6 +737,16 @@ def export_kmz(config_path: str, out_path: str | None, no_desktop: bool):
     click.echo(
         f"  Dig zone circles:     {manifest.dig_zone_circles:>5}  (hidden layer)"
     )
+    if manifest.nashdigs_active or manifest.nashdigs_committed or manifest.nashdigs_recent:
+        click.echo(
+            f"  NashDigs active:      {manifest.nashdigs_active:>5}"
+            f"  committed: {manifest.nashdigs_committed}"
+            f"  recent: {manifest.nashdigs_recent}"
+        )
+    if manifest.conflict_features:
+        click.echo(
+            f"  Conflict features:    {manifest.conflict_features:>5}  (hidden layer)"
+        )
     click.echo(f"\nOutput: {target}")
     if mirror_dir:
         click.echo(f"Mirror: {mirror_dir / target.name}")
@@ -862,19 +872,37 @@ def match_nashdigs(config_path: str, dry_run: bool):
 @main.command("fetch-nashdigs")
 @click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
 @click.option("--dry-run", is_flag=True, help="Query and parse but don't write to the DB.")
-def fetch_nashdigs(config_path: str, dry_run: bool):
+@click.option(
+    "--all-owners",
+    is_flag=True,
+    help="Also pull non-Northstar projects (Lines + Polygons) for the KMZ conflict layer.",
+)
+def fetch_nashdigs(config_path: str, dry_run: bool, all_owners: bool):
     """Pull Northstar-owned fiber project polylines from the public NashDigs feed.
 
     Cached locally in the `nashdigs_projects` table. Safe to run at every scrape
     (public service, no auth, small dataset). Deletes cached records that no
     longer appear in NashDigs (e.g., projects cancelled or transferred away).
+
+    With --all-owners, also pulls Lines + Polygons from every non-Northstar owner
+    (Metro Water, NES, NDOT, etc.) to populate the KMZ conflict-awareness
+    layer. Stale-deletion is scoped by owner, so a subsequent Northstar-only
+    refresh won't wipe the non-Northstar cache.
     """
     cfg = _load_app(config_path)
 
-    from tn811.connectors.nashdigs import fetch_target_packages, upsert_packages
+    from tn811.connectors.nashdigs import (
+        fetch_target_packages,
+        fetch_non_target_projects,
+        upsert_packages,
+    )
 
     packages = fetch_target_packages()
     click.echo(f"NashDigs: fetched {len(packages)} Northstar-owned package(s).")
+    if all_owners:
+        others = fetch_non_target_projects()
+        click.echo(f"NashDigs: fetched {len(others)} non-Northstar feature(s) for conflict layer.")
+        packages = packages + others
 
     # Sanity check — make sure the fetch looks right before touching the DB
     if packages:
