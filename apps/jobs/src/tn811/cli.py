@@ -418,7 +418,12 @@ def export_dashboard(config_path: str):
     default=False,
     help="Also emit by_sub/<slug>/ folders per active excavator.",
 )
-def export_csv(config_path: str, out_dir: str | None, sub_slices: bool):
+@click.option(
+    "--no-desktop",
+    is_flag=True,
+    help="Skip the Windows desktop mirror for this run (config default is honored otherwise).",
+)
+def export_csv(config_path: str, out_dir: str | None, sub_slices: bool, no_desktop: bool):
     """Write the supervisor CSV bundle (nine master files + optional per-sub slices)."""
     cfg = _load_app(config_path)
 
@@ -428,9 +433,25 @@ def export_csv(config_path: str, out_dir: str | None, sub_slices: bool):
     target = Path(out_dir) if out_dir else Path(cfg.paths.exports_dir)
     target.mkdir(parents=True, exist_ok=True)
 
-    click.echo(f"Writing CSV export to {target} {'[+ sub slices]' if sub_slices else ''}")
+    mirror_path: Path | None = None
+    if not no_desktop and cfg.exports.desktop_mirror_enabled and cfg.exports.desktop_mirror_path:
+        mirror_path = Path(cfg.exports.desktop_mirror_path)
+
+    suffix_bits = []
+    if sub_slices:
+        suffix_bits.append("+ sub slices")
+    if mirror_path:
+        suffix_bits.append(f"→ mirror {mirror_path}")
+    suffix = f" [{', '.join(suffix_bits)}]" if suffix_bits else ""
+    click.echo(f"Writing CSV export to {target}{suffix}")
+
     with get_session() as session:
-        manifest = run_export(session, target, sub_slices=sub_slices)
+        manifest = run_export(
+            session,
+            target,
+            sub_slices=sub_slices,
+            desktop_mirror_path=mirror_path,
+        )
 
     click.echo(f"\nWrote {len(manifest.master_files)} master file(s):")
     for f in manifest.master_files:
@@ -438,6 +459,8 @@ def export_csv(config_path: str, out_dir: str | None, sub_slices: bool):
     if manifest.sub_slice_count:
         click.echo(f"\nPer-sub slices: {manifest.sub_slice_count} folder(s) in by_sub/")
     click.echo(f"\nManifest: {target / 'MANIFEST.txt'}")
+    if mirror_path:
+        click.echo(f"Desktop mirror: {mirror_path}")
 
 
 # ── backfill ───────────────────────────────────────────────────────────────────

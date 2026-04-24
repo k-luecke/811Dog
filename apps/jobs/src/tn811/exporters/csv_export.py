@@ -192,21 +192,97 @@ def export(
     out_dir: Path | str,
     sub_slices: bool = False,
     now: datetime | None = None,
+    desktop_mirror_path: Path | str | None = None,
 ) -> ExportManifest:
-    """Query the DB and write the full export bundle."""
+    """Query the DB, write the export bundle, and (optionally) mirror to a second dir.
+
+    The mirror is a convenience for delivering the bundle to a Windows desktop
+    folder over /mnt/c/. A failure to write the mirror does NOT raise — the
+    in-repo write at `out_dir` is the source of truth; the mirror is best-effort.
+    """
     now = now or datetime.now(timezone.utc)
     now_ct = now.astimezone(CT)
 
+    out_path = Path(out_dir)
     views = load_ticket_views(session, now_ct)
     stats = _db_stats(session)
     manifest = write_exports(
         views=views,
-        out_dir=Path(out_dir),
+        out_dir=out_path,
         sub_slices=sub_slices,
         now_ct=now_ct,
         db_stats=stats,
     )
+
+    if desktop_mirror_path:
+        mirror_to_desktop(out_path, Path(desktop_mirror_path))
+
     return manifest
+
+
+def mirror_to_desktop(src_dir: Path, dest_dir: Path) -> bool:
+    """Copy the export bundle from src_dir to dest_dir, replacing any prior bundle.
+
+    Only files the exporter owns are touched in `dest_dir` (the nine master
+    CSVs, MANIFEST.txt, and the by_sub/ subtree). Any unrelated files dropped
+    into the mirror folder are left alone.
+
+    Returns True on success, False on any filesystem error. Errors are logged at
+    WARNING — never raised — so the primary in-repo write is never rolled back
+    by a flaky mount or permissions hiccup on the Windows side.
+    """
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "Desktop mirror: cannot create destination — skipping",
+            extra={"dest": str(dest_dir), "error": str(exc)},
+        )
+        return False
+
+    # Clear owned paths
+    try:
+        for name in MASTER_FILES:
+            p = dest_dir / name
+            if p.exists():
+                p.unlink()
+        manifest = dest_dir / "MANIFEST.txt"
+        if manifest.exists():
+            manifest.unlink()
+        by_sub_dest = dest_dir / "by_sub"
+        if by_sub_dest.exists():
+            shutil.rmtree(by_sub_dest)
+    except OSError as exc:
+        logger.warning(
+            "Desktop mirror: failed to clear prior bundle — skipping",
+            extra={"dest": str(dest_dir), "error": str(exc)},
+        )
+        return False
+
+    # Copy fresh bundle
+    try:
+        for name in MASTER_FILES:
+            src = src_dir / name
+            if src.exists():
+                shutil.copy2(src, dest_dir / name)
+        src_manifest = src_dir / "MANIFEST.txt"
+        if src_manifest.exists():
+            shutil.copy2(src_manifest, dest_dir / "MANIFEST.txt")
+        src_by_sub = src_dir / "by_sub"
+        if src_by_sub.exists() and src_by_sub.is_dir():
+            shutil.copytree(src_by_sub, dest_dir / "by_sub")
+    except OSError as exc:
+        logger.warning(
+            "Desktop mirror: copy failed — primary write at src_dir is intact",
+            extra={"src": str(src_dir), "dest": str(dest_dir), "error": str(exc)},
+        )
+        return False
+
+    logger.info(
+        "Desktop mirror: bundle copied",
+        extra={"src": str(src_dir), "dest": str(dest_dir)},
+    )
+    return True
 
 
 def load_ticket_views(session: Session, now_ct: datetime) -> list[TicketView]:
