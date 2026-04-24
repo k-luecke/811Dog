@@ -734,6 +734,9 @@ def export_kmz(config_path: str, out_path: str | None, no_desktop: bool):
     click.echo(
         f"  Skipped (no coords):  {manifest.skipped_no_coords:>5}"
     )
+    click.echo(
+        f"  Dig zone circles:     {manifest.dig_zone_circles:>5}  (hidden layer)"
+    )
     click.echo(f"\nOutput: {target}")
     if mirror_dir:
         click.echo(f"Mirror: {mirror_dir / target.name}")

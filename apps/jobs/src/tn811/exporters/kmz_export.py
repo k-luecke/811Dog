@@ -67,6 +67,15 @@ HAVERSINE_THRESHOLD_M = 50.0
 CAUTION_ICON_URL = "http://maps.google.com/mapfiles/kml/shapes/caution.png"
 DEFAULT_OUT_PATH = Path("data/exports/ops_snapshot.kmz")
 
+# Dig-zone circle approximates the TN811 coordinate's practical accuracy.
+# TN811 geocodes differ from Google Earth imagery alignment by ~20–50 m in urban
+# Davidson/Rutherford (investigation 2026-04-24); 25 m is a conservative
+# visual-tolerance ring that covers the typical miss without over-claiming.
+CIRCLE_RADIUS_M = 25.0
+CIRCLE_VERTICES = 32
+CIRCLE_FILL_ALPHA = 0.20
+CIRCLE_OUTLINE_ALPHA = 0.60
+
 # Reserved RGB triples that sub-color hashing must avoid.
 _RESERVED_RGB: tuple[tuple[int, int, int], ...] = (
     (255, 0, 0),       # red
@@ -169,6 +178,59 @@ def _midpoint(lat1: float, lon1: float, lat2: float, lon2: float) -> tuple[float
     return ((lat1 + lat2) / 2.0, (lon1 + lon2) / 2.0)
 
 
+def circle_polygon(
+    lat: float,
+    lon: float,
+    radius_m: float = CIRCLE_RADIUS_M,
+    n_vertices: int = CIRCLE_VERTICES,
+) -> list[tuple[float, float]]:
+    """Return a closed ring of (lon, lat) tuples approximating a circle.
+
+    Uses flat-earth metric approximation per-latitude: 1° latitude ≈ 111 320 m,
+    1° longitude ≈ 111 320·cos(lat) m. At 25 m radius, the sub-cm deviation from
+    a true geodesic circle is negligible — we intentionally avoid pulling in
+    pyproj for this cosmetic ring.
+
+    The returned ring is closed: ring[-1] == ring[0], as required by KML
+    Polygon/outerBoundaryIs.
+    """
+    meters_per_deg_lat = 111_320.0
+    meters_per_deg_lon = 111_320.0 * math.cos(math.radians(lat))
+    dlat = radius_m / meters_per_deg_lat
+    dlon = radius_m / meters_per_deg_lon
+
+    ring: list[tuple[float, float]] = []
+    for i in range(n_vertices):
+        theta = 2.0 * math.pi * i / n_vertices
+        vlat = lat + dlat * math.sin(theta)
+        vlon = lon + dlon * math.cos(theta)
+        ring.append((vlon, vlat))  # KML wants (lon, lat)
+    ring.append(ring[0])  # close the ring
+    return ring
+
+
+def _is_point_only(view: TicketView) -> bool:
+    """True iff this ticket would render as a single Point (not a LineString)."""
+    if view.latitude is None or view.longitude is None:
+        return False
+    if view.secondary_latitude is None or view.secondary_longitude is None:
+        return True
+    return (
+        haversine_m(
+            view.latitude, view.longitude,
+            view.secondary_latitude, view.secondary_longitude,
+        )
+        <= HAVERSINE_THRESHOLD_M
+    )
+
+
+def _apply_alpha(kml_color: str, alpha: float) -> str:
+    """Recompose an AABBGGRR KML color string with a new alpha (0.0–1.0)."""
+    alpha_byte = max(0, min(255, int(round(alpha * 255))))
+    # simplekml colors are 8-char AABBGGRR; take the last 6 chars (BBGGRR) and prepend new AA
+    return f"{alpha_byte:02x}{kml_color[-6:]}"
+
+
 # ── Color helpers ─────────────────────────────────────────────────────────────
 
 
@@ -259,6 +321,7 @@ class _StyleCache:
     def __init__(self, kml: simplekml.Kml):
         self._kml = kml
         self._cache: dict[_StyleKey, simplekml.Style] = {}
+        self._circle_cache: dict[str, simplekml.Style] = {}
 
     def get(self, color: str, *, caution: bool) -> simplekml.Style:
         key = _StyleKey(color=color, icon_url=CAUTION_ICON_URL if caution else None)
@@ -274,6 +337,18 @@ class _StyleCache:
             self._cache[key] = style
         return self._cache[key]
 
+    def circle(self, color: str) -> simplekml.Style:
+        """Return a polygon style with fill/outline alpha-faded from `color`."""
+        if color not in self._circle_cache:
+            s = simplekml.Style()
+            s.polystyle.color = _apply_alpha(color, CIRCLE_FILL_ALPHA)
+            s.polystyle.fill = 1
+            s.polystyle.outline = 1
+            s.linestyle.color = _apply_alpha(color, CIRCLE_OUTLINE_ALPHA)
+            s.linestyle.width = 1
+            self._circle_cache[color] = s
+        return self._circle_cache[color]
+
 
 # ── Top-level entry points ────────────────────────────────────────────────────
 
@@ -288,6 +363,7 @@ class KmzManifest:
     active_relevant: int
     cancelled_relevant_14d: int
     contractor_other: int
+    dig_zone_circles: int = 0
 
 
 def export(
@@ -372,7 +448,9 @@ def _build_and_save(
         f"Active relevant: {len(active_relevant)}  |  "
         f"Cancelled relevant (14d): {len(cancelled_14d)}  |  "
         f"Meridian non-relevant: {len(views_contractor_other)}  |  "
-        f"Skipped (no coords): {skipped_no_coords}"
+        f"Skipped (no coords): {skipped_no_coords}\n\n"
+        "Pins show TN811-provided coordinates. Actual dig zones are approximate — "
+        "toggle 'Dig zone circles' for ±25m visual tolerance."
     )
 
     styles = _StyleCache(kml)
@@ -449,6 +527,34 @@ def _build_and_save(
         folder_counts[f"sub/{slug}"] = len(bucket)
     sub_root.name = f"Active relevant — by sub ({total_sub_placed})"
 
+    # ── Dig zone circles (±25 m tolerance, hidden by default) ───────────────
+    # Only point-rendered tickets get a circle; polyline tickets already convey
+    # their dig area via the LineString. Grouped by urgency bucket so the color
+    # still carries urgency information at a glance.
+    circles_root = kml.newfolder(name="Dig zone circles (±25m approximate)")
+    circles_root.visibility = 0
+    circle_buckets: dict[str, list[TicketView]] = {}
+    for v in active_relevant:
+        if not _is_point_only(v):
+            continue
+        label, _ = urgency_bucket(v)
+        circle_buckets.setdefault(label, []).append(v)
+
+    circle_total = 0
+    for label in ("Expiring ≤ 4 days", "Expiring 5–7 days",
+                  "Expiring 8+ days", "No expire date"):
+        bucket = circle_buckets.get(label, [])
+        sub = circles_root.newfolder(name=f"{label} ({len(bucket)})")
+        sub.visibility = 0
+        color = _urgency_color_for_label(label)
+        for v in bucket:
+            _add_circle(sub, v, color, styles)
+            circle_total += 1
+        folder_counts[f"circle/{label}"] = len(bucket)
+    circles_root.name = (
+        f"Dig zone circles (±25m approximate) ({circle_total})"
+    )
+
     # ── Cancelled relevant (last 14 days) ──────────────────────────────────────
     cancelled_folder = kml.newfolder(
         name=f"Cancelled relevant — last 14 days ({len(cancelled_14d)})"
@@ -485,6 +591,7 @@ def _build_and_save(
         active_relevant=len(active_relevant),
         cancelled_relevant_14d=len(cancelled_14d),
         contractor_other=len(views_contractor_other),
+        dig_zone_circles=circle_total,
     )
 
 
@@ -552,6 +659,22 @@ def _add_placemark(
             description=description,
         )
         pin.style = style
+
+
+def _add_circle(
+    folder: simplekml.Folder,
+    view: TicketView,
+    base_color: str,
+    styles: _StyleCache,
+) -> None:
+    """Emit a 25 m tolerance ring around a point-rendered ticket."""
+    ring = circle_polygon(view.latitude, view.longitude)  # already (lon, lat)
+    poly = folder.newpolygon(
+        name="",  # pin carries the label; circle stays unlabeled
+        outerboundaryis=ring,
+        description=_render_popup(view),
+    )
+    poly.style = styles.circle(base_color)
 
 
 # ── Desktop mirror ────────────────────────────────────────────────────────────
