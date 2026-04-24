@@ -626,8 +626,8 @@ def reparse_details(config_path: str, dry_run: bool):
     from tn811.portal.detail import parse_detail_html
 
     # ── Migrate schema: add new columns if the DB predates this feature ──────
-    if not dry_run:
-        _migrate_add_utility_columns(get_engine())
+    # Always run — migration is idempotent and required even for dry-run reads
+    _migrate_add_utility_columns(get_engine())
 
     base_url = cfg.portal.base_url
 
