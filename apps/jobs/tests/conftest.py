@@ -151,6 +151,8 @@ def base_config():
                           pattern="drop bury", weight=0.65, case_sensitive=False),
             RelevanceRule(id="fiber_generic", field="any", match_type="contains",
                           pattern="fiber", weight=0.30, case_sensitive=False),
+            RelevanceRule(id="done_for_ervin_cable", field="done_for", match_type="contains",
+                          pattern="ervin cable", weight=1.0, case_sensitive=False),
         ],
         negative_rules=[
             RelevanceRule(id="water_only", field="work_type", match_type="regex",

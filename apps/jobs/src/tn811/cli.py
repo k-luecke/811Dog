@@ -169,13 +169,20 @@ _GFIBER_SUBCONTRACTORS: frozenset[str] = frozenset({
 
 
 def _worth_detail_fetch(row) -> bool:
-    """Return True if this row is a plausible GFiber ticket worth fetching detail for."""
+    """Return True if this row is a plausible GFiber ticket worth fetching detail for.
+
+    Kept in sync with the relevance rules' primary `done_for` signals. "ervin cable"
+    is listed here so Ervin-subcontracted work (MAC Underground, Civcom, etc.)
+    gets its detail page fetched at scrape time — without this, those rows go in
+    row-only and miss the utility-status + full-text context the scorer relies on.
+    """
     wdf = (row.work_done_for_raw or "").lower()
     exc = (row.excavator_name_raw or "").lower()
     wt = (row.work_type_raw or "").lower()
     return (
         "google" in wdf
         or "gfiber" in wdf
+        or "ervin cable" in wdf
         or any(s in exc for s in _GFIBER_SUBCONTRACTORS)
         or any(kw in wt for kw in ("fiber optic", "ftth", "fiber instl", "fiber bury"))
     )
@@ -660,6 +667,83 @@ def reset_reminders(config_path: str, confirm: bool):
         session.query(ORMReminderEvent).delete()
 
     click.echo(f"Deleted {count} reminder event(s).")
+
+
+# ── rescore ───────────────────────────────────────────────────────────────────
+
+@main.command("rescore")
+@click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
+@click.option("--dry-run", is_flag=True, help="Print change counts without writing to DB")
+def rescore(config_path: str, dry_run: bool):
+    """
+    Re-score every ticket against the current relevance rules.
+
+    Use this after changing relevance rules or adding a new prime/subcontractor
+    signal — existing tickets are NOT automatically reclassified when config
+    changes, since scoring happens at scrape time. Scores against the stored
+    row fields only (no HTML fetch), so it works even for tickets that were
+    filed row-only during a scrape (the pre-filter skipped detail fetch).
+    """
+    cfg = _load_app(config_path)
+
+    from tn811.db import get_session
+    from tn811.models import ORMTicket, orm_to_normalized
+    from tn811.relevance.matcher import RelevanceMatcher
+
+    matcher = RelevanceMatcher(cfg.relevance)
+
+    stats = {"total": 0, "newly_gfiber": 0, "no_longer_gfiber": 0,
+             "score_changed": 0, "unchanged": 0}
+    newly_flagged_samples: list[str] = []
+
+    with get_session() as session:
+        tickets = session.query(ORMTicket).all()
+        for t in tickets:
+            stats["total"] += 1
+            norm = orm_to_normalized(t)
+            old_flag = bool(t.is_gfiber_related)
+            old_score = float(t.relevance_score or 0.0)
+
+            matcher.apply(norm)
+
+            new_flag = norm.is_gfiber_related
+            new_score = norm.relevance_score
+            flag_flipped = new_flag != old_flag
+            score_moved = abs(new_score - old_score) > 1e-6
+
+            if flag_flipped:
+                if new_flag:
+                    stats["newly_gfiber"] += 1
+                    if len(newly_flagged_samples) < 5:
+                        newly_flagged_samples.append(
+                            f"{t.ticket_number}  {t.excavator_name!r} "
+                            f"done_for={t.done_for!r} score={new_score:.2f}"
+                        )
+                else:
+                    stats["no_longer_gfiber"] += 1
+                if not dry_run:
+                    t.is_gfiber_related = new_flag
+                    t.relevance_score = new_score
+                    t.relevance_reasons = norm.relevance_reasons
+            elif score_moved:
+                stats["score_changed"] += 1
+                if not dry_run:
+                    t.relevance_score = new_score
+                    t.relevance_reasons = norm.relevance_reasons
+            else:
+                stats["unchanged"] += 1
+
+    click.echo(f"Rescored {stats['total']:,} ticket(s):")
+    click.echo(f"  +{stats['newly_gfiber']:>5}  newly flagged as GFiber")
+    click.echo(f"  -{stats['no_longer_gfiber']:>5}  no longer flagged as GFiber")
+    click.echo(f"  ~{stats['score_changed']:>5}  score changed (flag same)")
+    click.echo(f"  ={stats['unchanged']:>5}  unchanged")
+    if newly_flagged_samples:
+        click.echo("\nSample newly-flagged tickets:")
+        for line in newly_flagged_samples:
+            click.echo(f"  {line}")
+    if dry_run:
+        click.echo("\n[DRY RUN — no changes written]")
 
 
 # ── reparse-details ───────────────────────────────────────────────────────────

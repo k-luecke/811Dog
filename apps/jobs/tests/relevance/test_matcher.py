@@ -108,6 +108,52 @@ class TestRelevanceMatcher:
         result = matcher.score(ticket)
         assert result.score >= 0.0
 
+    def test_ervin_cable_done_for_scores_above_threshold(self, base_config):
+        """Rows where done_for is an Ervin Cable variant must be flagged."""
+        matcher = RelevanceMatcher(base_config.relevance)
+        # All four Ervin-related done_for spellings seen in the real DB
+        for done_for in [
+            "ERVIN CABLE CONSTRUCTION",
+            "ERVIN CABLE/GOOGLE FIBER",
+            "ERVIN CABLE",
+            "Ervin Cable Construction",  # mixed-case survives case_sensitive=False
+        ]:
+            ticket = _make_ticket(
+                excavator_name="MAC UNDERGROUND",
+                work_type="CONDUIT INSTL",
+                done_for=done_for,
+            )
+            result = matcher.score(ticket)
+            assert result.is_gfiber_related is True, (
+                f"expected Ervin variant {done_for!r} to flag as GFiber, "
+                f"got score={result.score:.2f}"
+            )
+            assert any("done_for_ervin_cable" in r for r in result.reasons)
+
+    def test_jeff_ervin_namesake_is_not_flagged(self, base_config):
+        """A person named 'Jeff Ervin' in done_for must NOT trip the Ervin Cable rule."""
+        matcher = RelevanceMatcher(base_config.relevance)
+        ticket = _make_ticket(
+            excavator_name="AIT WORLDWIDE LOGISTICS",
+            work_type="GRADING",
+            done_for="JEFF ERVIN",
+        )
+        result = matcher.score(ticket)
+        assert result.is_gfiber_related is False
+        assert not any("done_for_ervin_cable" in r for r in result.reasons)
+
+    def test_ervin_as_excavator_only_does_not_trigger_rule(self, base_config):
+        """The one ticket where Ervin is the excavator (done_for a non-fiber prime)
+        must not fire the done_for-scoped Ervin rule."""
+        matcher = RelevanceMatcher(base_config.relevance)
+        ticket = _make_ticket(
+            excavator_name="ERVIN CABLE CONSTRUCTIONS, LLC",
+            work_type="HANDHOLE INSTL",
+            done_for="TITANIUM LVL",
+        )
+        result = matcher.score(ticket)
+        assert not any("done_for_ervin_cable" in r for r in result.reasons)
+
     def test_apply_mutates_ticket(self, base_config):
         matcher = RelevanceMatcher(base_config.relevance)
         ticket = _make_ticket(remarks="Google Fiber drop bury")
