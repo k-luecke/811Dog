@@ -68,6 +68,22 @@ class UtilityResponse(BaseModel):
     response_text: str | None = None
 
 
+# ── Utility status enum values ────────────────────────────────────────────────
+# clear     — no conflict; no facilities in dig area
+# located   — facilities exist and are marked; dig carefully
+# pending   — utility has not yet responded
+# delayed   — locate was delayed (may still need follow-up)
+# not_clear — in conflict, cannot locate, or no response on a closed ticket
+# unknown   — unrecognized portal response combination
+UTIL_STATUS_CLEAR = "clear"
+UTIL_STATUS_LOCATED = "located"
+UTIL_STATUS_PENDING = "pending"
+UTIL_STATUS_DELAYED = "delayed"
+UTIL_STATUS_NOT_CLEAR = "not_clear"
+UTIL_STATUS_UNKNOWN = "unknown"
+_UTIL_STATUSES_READY = frozenset({UTIL_STATUS_CLEAR, UTIL_STATUS_LOCATED})
+
+
 class NormalizedTicket(BaseModel):
     """
     Canonical normalized representation of a TN811 ticket.
@@ -93,6 +109,7 @@ class NormalizedTicket(BaseModel):
     # Work details
     work_type: str | None = None
     location_text: str | None = None
+    intersection_text: str | None = None
     remarks: str | None = None
     done_for: str | None = None          # entity the work is being done for (e.g. "GOOGLE FIBER")
 
@@ -100,6 +117,18 @@ class NormalizedTicket(BaseModel):
     utility_references: list[str] = Field(default_factory=list)
     utility_responses: list[UtilityResponse] = Field(default_factory=list)
     utility_codes: list[str] = Field(default_factory=list)   # short codes like ["GFI", "NES"]
+
+    # Per-utility status records (one dict per utility row in the Response Status table).
+    # Each record: {code, name, facility, row_status, last_response, response_timestamp,
+    #               response_count, notes, status, is_late}
+    utility_statuses: list[dict] = Field(default_factory=list)
+
+    # Ticket-level utility rollups (derived from utility_statuses + call_date)
+    is_ready_to_dig: bool = False        # True when all utilities are clear or located
+    has_late_utility: bool = False       # True when any utility is pending >72h
+    late_utility_codes: list[str] = Field(default_factory=list)      # pending >72h
+    pending_utility_codes: list[str] = Field(default_factory=list)   # pending, within 72h
+    blocking_utility_codes: list[str] = Field(default_factory=list)  # delayed or not_clear
 
     # Lifecycle
     status: TicketStatus = TicketStatus.UNKNOWN
@@ -227,12 +256,19 @@ class ORMTicket(Base):
 
     work_type = Column(Text, index=True)
     location_text = Column(Text)
+    intersection_text = Column(Text)
     remarks = Column(Text)
     done_for = Column(Text, index=True)     # entity the work is done for (e.g. GOOGLE FIBER)
 
     utility_references = Column(JSON)       # list[str]
     utility_responses = Column(JSON)        # list[dict]
     utility_codes = Column(JSON)            # list[str] — short codes like ["GFI", "NES"]
+    utility_statuses = Column(JSON)         # list[dict] — per-utility status records
+    is_ready_to_dig = Column(Boolean, default=False)
+    has_late_utility = Column(Boolean, default=False)
+    late_utility_codes = Column(JSON)       # list[str]
+    pending_utility_codes = Column(JSON)    # list[str]
+    blocking_utility_codes = Column(JSON)   # list[str]
 
     status = Column(String(16), nullable=False, default="unknown", index=True)
     is_cancelled = Column(Boolean, nullable=False, default=False)
@@ -402,11 +438,18 @@ def orm_to_normalized(t: ORMTicket) -> NormalizedTicket:
         caller_phone=t.caller_phone,
         work_type=t.work_type,
         location_text=t.location_text,
+        intersection_text=t.intersection_text,
         remarks=t.remarks,
         done_for=t.done_for,
         utility_references=t.utility_references or [],
         utility_responses=[UtilityResponse(**r) for r in (t.utility_responses or [])],
         utility_codes=t.utility_codes or [],
+        utility_statuses=t.utility_statuses or [],
+        is_ready_to_dig=bool(t.is_ready_to_dig),
+        has_late_utility=bool(t.has_late_utility),
+        late_utility_codes=t.late_utility_codes or [],
+        pending_utility_codes=t.pending_utility_codes or [],
+        blocking_utility_codes=t.blocking_utility_codes or [],
         status=TicketStatus(t.status) if t.status else TicketStatus.UNKNOWN,
         is_cancelled=bool(t.is_cancelled),
         relevance_score=float(t.relevance_score or 0.0),
@@ -437,11 +480,18 @@ def normalized_to_orm_dict(ticket: NormalizedTicket, now: datetime) -> dict[str,
         "caller_phone": ticket.caller_phone,
         "work_type": ticket.work_type,
         "location_text": ticket.location_text,
+        "intersection_text": ticket.intersection_text,
         "remarks": ticket.remarks,
         "done_for": ticket.done_for,
         "utility_references": ticket.utility_references,
         "utility_responses": [r.model_dump() for r in ticket.utility_responses],
         "utility_codes": ticket.utility_codes,
+        "utility_statuses": ticket.utility_statuses,
+        "is_ready_to_dig": ticket.is_ready_to_dig,
+        "has_late_utility": ticket.has_late_utility,
+        "late_utility_codes": ticket.late_utility_codes,
+        "pending_utility_codes": ticket.pending_utility_codes,
+        "blocking_utility_codes": ticket.blocking_utility_codes,
         "status": ticket.status.value,
         "is_cancelled": ticket.is_cancelled,
         "relevance_score": ticket.relevance_score,

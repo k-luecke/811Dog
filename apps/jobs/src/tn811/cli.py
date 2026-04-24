@@ -602,5 +602,147 @@ def reset_reminders(config_path: str, confirm: bool):
     click.echo(f"Deleted {count} reminder event(s).")
 
 
+# ── reparse-details ───────────────────────────────────────────────────────────
+
+@main.command("reparse-details")
+@click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
+@click.option("--dry-run", is_flag=True, help="Parse and print results without writing to DB")
+def reparse_details(config_path: str, dry_run: bool):
+    """
+    Re-parse saved detail HTML snapshots to populate utility status fields.
+
+    Walks all tickets with a saved HTML snapshot, re-runs parse_detail_html(),
+    and updates utility_statuses, location_text, intersection_text,
+    legal_start_date, and all derived rollup fields in place.
+    Does NOT re-scrape the portal.
+    """
+    from pathlib import Path
+
+    cfg = _load_app(config_path)
+
+    from tn811.db import get_engine, get_session
+    from tn811.models import ORMTicket
+    from tn811.normalize.tickets import _compute_utility_rollups, _parse_date_layered
+    from tn811.portal.detail import parse_detail_html
+
+    # ── Migrate schema: add new columns if the DB predates this feature ──────
+    if not dry_run:
+        _migrate_add_utility_columns(get_engine())
+
+    base_url = cfg.portal.base_url
+
+    with get_session() as session:
+        tickets = (
+            session.query(ORMTicket)
+            .filter(ORMTicket.source_html_path.isnot(None))
+            .all()
+        )
+
+    click.echo(
+        f"Found {len(tickets)} tickets with saved HTML snapshots "
+        f"{'[DRY RUN]' if dry_run else ''}"
+    )
+
+    updated = skipped = errors = 0
+    now = datetime.now(timezone.utc)
+
+    with get_session() as session:
+        for orm_t in session.query(ORMTicket).filter(ORMTicket.source_html_path.isnot(None)).all():
+            html_path = Path(orm_t.source_html_path)
+            if not html_path.exists():
+                skipped += 1
+                continue
+
+            try:
+                html = html_path.read_text(encoding="utf-8", errors="replace")
+                detail = parse_detail_html(
+                    html, orm_t.ticket_number, orm_t.county, base_url
+                )
+
+                call_date = _parse_date_layered(orm_t.call_date)
+                is_cancelled = bool(orm_t.is_cancelled)
+
+                enriched, rollups = _compute_utility_rollups(
+                    detail.utility_statuses, call_date, is_cancelled, now
+                )
+
+                if dry_run:
+                    click.echo(
+                        f"  {orm_t.ticket_number}: "
+                        f"utils={len(enriched)} ready={rollups['is_ready_to_dig']} "
+                        f"late={rollups['late_utility_codes']} "
+                        f"blocking={rollups['blocking_utility_codes']} "
+                        f"location={detail.fields.get('location_text')} "
+                        f"intersection={detail.fields.get('intersection_text')}"
+                    )
+                    updated += 1
+                    continue
+
+                orm_t.utility_statuses = enriched
+                orm_t.is_ready_to_dig = rollups["is_ready_to_dig"]
+                orm_t.has_late_utility = rollups["has_late_utility"]
+                orm_t.late_utility_codes = rollups["late_utility_codes"]
+                orm_t.pending_utility_codes = rollups["pending_utility_codes"]
+                orm_t.blocking_utility_codes = rollups["blocking_utility_codes"]
+
+                # Backfill location_text and intersection_text if not yet set
+                if detail.fields.get("location_text"):
+                    orm_t.location_text = detail.fields["location_text"]
+                if detail.fields.get("intersection_text"):
+                    orm_t.intersection_text = detail.fields["intersection_text"]
+
+                # Backfill legal_start_date if not yet set
+                if not orm_t.legal_start_date and detail.fields.get("legal_start_date"):
+                    from tn811.pdf.extractor import parse_date as _pd
+                    d = _pd(detail.fields["legal_start_date"])
+                    if d:
+                        orm_t.legal_start_date = d.isoformat()
+
+                updated += 1
+
+            except Exception as exc:
+                logger.error(
+                    "reparse-details failed for ticket",
+                    extra={"ticket": orm_t.ticket_number, "error": str(exc)},
+                    exc_info=exc,
+                )
+                errors += 1
+
+    click.echo(
+        f"\nDone: {updated} updated, {skipped} skipped (missing file), {errors} errors"
+    )
+
+
+def _migrate_add_utility_columns(engine) -> None:
+    """Add new utility status columns to the tickets table if they don't exist."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    existing = {col["name"] for col in inspector.get_columns("tickets")}
+
+    new_columns = [
+        ("intersection_text", "TEXT"),
+        ("utility_statuses", "JSON"),
+        ("is_ready_to_dig", "BOOLEAN DEFAULT 0"),
+        ("has_late_utility", "BOOLEAN DEFAULT 0"),
+        ("late_utility_codes", "JSON"),
+        ("pending_utility_codes", "JSON"),
+        ("blocking_utility_codes", "JSON"),
+    ]
+
+    added = []
+    with engine.connect() as conn:
+        for col_name, col_type in new_columns:
+            if col_name not in existing:
+                conn.execute(text(f"ALTER TABLE tickets ADD COLUMN {col_name} {col_type}"))
+                added.append(col_name)
+        conn.commit()
+
+    if added:
+        logger.info("Migration: added columns", extra={"columns": added})
+    else:
+        logger.debug("Migration: all columns already present")
+
+
 if __name__ == "__main__":
     main()

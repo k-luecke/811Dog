@@ -112,6 +112,14 @@ class DetailPage:
         "location description": "location_text",
         "street address": "location_text",
         "work street address": "location_text",
+        # Live portal Work Information section uses "Address:" for the street
+        "address": "location_text",
+        # Intersection is kept separate so exports can filter/sort on each
+        "intersection": "intersection_text",
+        # Live portal uses "Work To Begin:" not "Legal Start Date:"
+        "work to begin": "legal_start_date",
+        # Live portal uses "Expire Date:" not "Expiration Date:"
+        "expire date": "expiration_date",
         "remarks": "remarks",
         "comments": "remarks",
         "additional information": "remarks",

@@ -35,6 +35,8 @@ _DATE_PATTERNS = [
     re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})"),
     # YYYY-MM-DD
     re.compile(r"(\d{4})-(\d{2})-(\d{2})"),
+    # MM/DD/YY (portal "Work To Begin" field uses 2-digit year: "04/08/26 AT 9:30 AM")
+    re.compile(r"(\d{1,2})/(\d{1,2})/(\d{2})(?!\d)"),
     # Month DD, YYYY
     re.compile(r"([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})"),
 ]
@@ -57,14 +59,17 @@ def parse_date(raw: str) -> date | None:
             continue
         g = m.groups()
         try:
-            if len(g[0]) == 4:  # YYYY-MM-DD
-                return date(int(g[0]), int(g[1]), int(g[2]))
-            elif g[0].isdigit():  # MM/DD/YYYY
-                return date(int(g[2]), int(g[0]), int(g[1]))
-            else:  # Month DD, YYYY
+            if not g[0].isdigit():  # Month DD, YYYY (e.g. "June 1, 2024")
                 month = _MONTH_NAMES.get(g[0].lower())
                 if month:
                     return date(int(g[2]), month, int(g[1]))
+            elif len(g[0]) == 4:  # YYYY-MM-DD
+                return date(int(g[0]), int(g[1]), int(g[2]))
+            else:  # MM/DD/YYYY or MM/DD/YY
+                year = int(g[2])
+                if year < 100:  # 2-digit year → assume 2000s
+                    year += 2000
+                return date(year, int(g[0]), int(g[1]))
         except ValueError:
             continue
     return None
