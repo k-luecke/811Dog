@@ -952,7 +952,9 @@ def reparse_details(config_path: str, dry_run: bool):
                         f"late={rollups['late_utility_codes']} "
                         f"blocking={rollups['blocking_utility_codes']} "
                         f"location={detail.fields.get('location_text')} "
-                        f"intersection={detail.fields.get('intersection_text')}"
+                        f"intersection={detail.fields.get('intersection_text')} "
+                        f"lat={detail.fields.get('latitude')} "
+                        f"lon={detail.fields.get('longitude')}"
                     )
                     updated += 1
                     continue
@@ -976,6 +978,19 @@ def reparse_details(config_path: str, dry_run: bool):
                     d = _pd(detail.fields["legal_start_date"])
                     if d:
                         orm_t.legal_start_date = d.isoformat()
+
+                # Backfill geographic coordinates from detail page. Always
+                # overwrite — if the detail HTML has them, they're authoritative.
+                from tn811.normalize.tickets import _parse_float as _pf
+                for src_key, dest_attr in (
+                    ("latitude", "latitude"),
+                    ("longitude", "longitude"),
+                    ("secondary_latitude", "secondary_latitude"),
+                    ("secondary_longitude", "secondary_longitude"),
+                ):
+                    val = _pf(detail.fields.get(src_key))
+                    if val is not None:
+                        setattr(orm_t, dest_attr, val)
 
                 updated += 1
 
@@ -1007,6 +1022,10 @@ def _migrate_add_utility_columns(engine) -> None:
         ("late_utility_codes", "JSON"),
         ("pending_utility_codes", "JSON"),
         ("blocking_utility_codes", "JSON"),
+        ("latitude", "REAL"),
+        ("longitude", "REAL"),
+        ("secondary_latitude", "REAL"),
+        ("secondary_longitude", "REAL"),
     ]
 
     added = []

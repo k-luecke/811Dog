@@ -113,6 +113,12 @@ class NormalizedTicket(BaseModel):
     remarks: str | None = None
     done_for: str | None = None          # entity the work is being done for (e.g. "GOOGLE FIBER")
 
+    # Geographic coordinates (two points = line segment of the dig path).
+    latitude: float | None = None
+    longitude: float | None = None
+    secondary_latitude: float | None = None
+    secondary_longitude: float | None = None
+
     # Utilities
     utility_references: list[str] = Field(default_factory=list)
     utility_responses: list[UtilityResponse] = Field(default_factory=list)
@@ -259,6 +265,12 @@ class ORMTicket(Base):
     intersection_text = Column(Text)
     remarks = Column(Text)
     done_for = Column(Text, index=True)     # entity the work is done for (e.g. GOOGLE FIBER)
+
+    # Geographic coordinates (from detail page Work Information block)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    secondary_latitude = Column(Float)
+    secondary_longitude = Column(Float)
 
     utility_references = Column(JSON)       # list[str]
     utility_responses = Column(JSON)        # list[dict]
@@ -441,6 +453,10 @@ def orm_to_normalized(t: ORMTicket) -> NormalizedTicket:
         intersection_text=t.intersection_text,
         remarks=t.remarks,
         done_for=t.done_for,
+        latitude=t.latitude,
+        longitude=t.longitude,
+        secondary_latitude=t.secondary_latitude,
+        secondary_longitude=t.secondary_longitude,
         utility_references=t.utility_references or [],
         utility_responses=[UtilityResponse(**r) for r in (t.utility_responses or [])],
         utility_codes=t.utility_codes or [],
@@ -483,6 +499,10 @@ def normalized_to_orm_dict(ticket: NormalizedTicket, now: datetime) -> dict[str,
         "intersection_text": ticket.intersection_text,
         "remarks": ticket.remarks,
         "done_for": ticket.done_for,
+        "latitude": ticket.latitude,
+        "longitude": ticket.longitude,
+        "secondary_latitude": ticket.secondary_latitude,
+        "secondary_longitude": ticket.secondary_longitude,
         "utility_references": ticket.utility_references,
         "utility_responses": [r.model_dump() for r in ticket.utility_responses],
         "utility_codes": ticket.utility_codes,

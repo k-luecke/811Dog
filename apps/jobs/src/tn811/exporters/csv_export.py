@@ -70,6 +70,8 @@ MASTER_COLUMNS: tuple[str, ...] = (
     "is_cancelled",
     "status",
     "remarks",
+    "latitude",
+    "longitude",
 )
 
 UTILITY_DETAIL_COLUMNS: tuple[str, ...] = (
@@ -148,6 +150,8 @@ class TicketView:
     is_cancelled: bool
     status: str  # active | cancelled | expiring_soon | expired | unknown
     remarks: str
+    latitude: float | None = None
+    longitude: float | None = None
     utility_statuses: list[dict] = field(default_factory=list)
 
 
@@ -335,6 +339,8 @@ def ticket_view_from_orm(t: ORMTicket, now_ct: datetime) -> TicketView:
         is_cancelled=is_cancelled,
         status=status,
         remarks=t.remarks or "",
+        latitude=t.latitude,
+        longitude=t.longitude,
         utility_statuses=utility_statuses,
     )
 
@@ -754,6 +760,8 @@ def _view_to_master_row(v: TicketView) -> list:
         _fmt_bool(v.is_cancelled),
         v.status,
         v.remarks,
+        "" if v.latitude is None else f"{v.latitude:.6f}",
+        "" if v.longitude is None else f"{v.longitude:.6f}",
     ]
 
 

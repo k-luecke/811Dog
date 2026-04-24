@@ -121,6 +121,16 @@ def normalize_ticket(
         row.work_done_for_raw,
     ))
 
+    # ── Geographic coordinates ────────────────────────────────────────────────
+    latitude = _parse_float(detail.fields.get("latitude") if detail else None)
+    longitude = _parse_float(detail.fields.get("longitude") if detail else None)
+    secondary_latitude = _parse_float(
+        detail.fields.get("secondary_latitude") if detail else None
+    )
+    secondary_longitude = _parse_float(
+        detail.fields.get("secondary_longitude") if detail else None
+    )
+
     # ── Utilities ─────────────────────────────────────────────────────────────
     utility_codes = (detail.utility_codes if detail else []) or []
     raw_utility_statuses = (detail.utility_statuses if detail else []) or []
@@ -156,6 +166,10 @@ def normalize_ticket(
         intersection_text=intersection_text,
         remarks=remarks,
         done_for=done_for,
+        latitude=latitude,
+        longitude=longitude,
+        secondary_latitude=secondary_latitude,
+        secondary_longitude=secondary_longitude,
         utility_references=[],
         utility_responses=[],
         utility_codes=utility_codes,
@@ -288,6 +302,16 @@ def _parse_date_layered(*raw_strings: str | None) -> date | None:
             if parsed:
                 return parsed
     return None
+
+
+def _parse_float(raw: str | None) -> float | None:
+    """Return raw parsed as float, or None if blank or malformed."""
+    if raw is None:
+        return None
+    try:
+        return float(str(raw).strip())
+    except (ValueError, TypeError):
+        return None
 
 
 def _looks_cancelled(status_raw: str | None) -> bool:

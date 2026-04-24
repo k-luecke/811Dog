@@ -86,3 +86,57 @@ class TestParseDetailHtmlCancelled:
     def test_ticket_number_preserved(self, detail_html_cancelled: str):
         record = parse_detail_html(detail_html_cancelled, "TN20240604-100004", "Davidson County", BASE_URL)
         assert record.ticket_number == "TN20240604-100004"
+
+
+class TestParseDetailHtmlCoordinates:
+    """Primary + secondary lat/lon live in a 4-column TD row inside the Work
+    Information block. Strategy 2 in parse_detail_html already handles that
+    shape; these tests confirm the new LABEL_TO_FIELD entries route the values
+    into `record.fields` with the canonical field names."""
+
+    _HTML_WITH_COORDS = """
+    <html><body>
+      <table>
+        <tr>
+          <td>Ticket Number:</td><td>2611313902</td>
+          <td>County:</td><td>Davidson County</td>
+        </tr>
+        <tr>
+          <td>Latitude:</td><td>35.891968</td>
+          <td>Longitude:</td><td>-86.417549</td>
+        </tr>
+        <tr>
+          <td>Secondary Lat:</td><td>35.892489</td>
+          <td>Secondary Long:</td><td>-86.416932</td>
+        </tr>
+      </table>
+    </body></html>
+    """
+
+    def test_primary_coords_parsed(self):
+        rec = parse_detail_html(
+            self._HTML_WITH_COORDS, "2611313902", "Davidson County", BASE_URL
+        )
+        assert rec.fields.get("latitude") == "35.891968"
+        assert rec.fields.get("longitude") == "-86.417549"
+
+    def test_secondary_coords_parsed(self):
+        rec = parse_detail_html(
+            self._HTML_WITH_COORDS, "2611313902", "Davidson County", BASE_URL
+        )
+        assert rec.fields.get("secondary_latitude") == "35.892489"
+        assert rec.fields.get("secondary_longitude") == "-86.416932"
+
+    def test_missing_coords_do_not_appear(self):
+        """A detail HTML without lat/lon rows must not invent values."""
+        html_no_coords = (
+            "<html><body><table><tr>"
+            "<td>Ticket Number:</td><td>XYZ</td>"
+            "<td>County:</td><td>Davidson County</td>"
+            "</tr></table></body></html>"
+        )
+        rec = parse_detail_html(html_no_coords, "XYZ", "Davidson County", BASE_URL)
+        assert "latitude" not in rec.fields
+        assert "longitude" not in rec.fields
+        assert "secondary_latitude" not in rec.fields
+        assert "secondary_longitude" not in rec.fields
