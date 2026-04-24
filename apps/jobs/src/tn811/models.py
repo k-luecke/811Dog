@@ -401,6 +401,48 @@ class ORMParseFailure(Base):
     resolved_at = Column(DateTime)
 
 
+class ORMNashDigsProject(Base):
+    """
+    Cached Google-owned fiber project pulled from NashDigs.
+
+    NashDigs is Metro Nashville's public project-coordination FeatureServer.
+    Google files each fiber package under the BNA### naming scheme before
+    811 tickets are called in. One row per ProjectID (stable over time).
+    Geometry is a GeoJSON MultiLineString in WGS84 for direct use with
+    shapely after reprojection.
+    """
+    __tablename__ = "nashdigs_projects"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # Upstream identifiers
+    project_id = Column(Integer, nullable=False, unique=True, index=True)
+    project_name = Column(String(64), nullable=False, index=True)  # BNA###
+
+    # Descriptive fields
+    facility_type = Column(String(32))
+    project_type = Column(String(64))
+    description = Column(Text)
+    owner = Column(String(64), nullable=False, index=True)
+    department = Column(String(64))
+    division = Column(String(64))
+    status = Column(String(32), index=True)
+    council_district = Column(String(32))
+
+    # Dates (ISO strings for consistency with other date fields on ORMTicket)
+    est_start_date = Column(String(16))
+    est_end_date = Column(String(16))
+    act_start_date = Column(String(16))
+    act_end_date = Column(String(16))
+
+    # Geometry — GeoJSON MultiLineString in WGS84. Keeping full fidelity
+    # (no precomputed shapely object) so we can reproject on demand.
+    geometry_geojson = Column(JSON, nullable=False)
+
+    # Audit
+    fetched_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+
 class ORMInferredWorkGroup(Base):
     """
     Inferred work group — a cluster of related tickets sharing a probable company/crew.

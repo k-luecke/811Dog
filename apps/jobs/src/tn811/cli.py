@@ -819,6 +819,52 @@ def rescore(config_path: str, dry_run: bool):
         click.echo("\n[DRY RUN — no changes written]")
 
 
+# ── fetch-nashdigs ────────────────────────────────────────────────────────────
+
+@main.command("fetch-nashdigs")
+@click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
+@click.option("--dry-run", is_flag=True, help="Query and parse but don't write to the DB.")
+def fetch_nashdigs(config_path: str, dry_run: bool):
+    """Pull Google-owned fiber project polylines from the public NashDigs feed.
+
+    Cached locally in the `nashdigs_projects` table. Safe to run at every scrape
+    (public service, no auth, small dataset). Deletes cached records that no
+    longer appear in NashDigs (e.g., projects cancelled or transferred away).
+    """
+    cfg = _load_app(config_path)
+
+    from tn811.connectors.nashdigs import fetch_google_packages, upsert_packages
+
+    packages = fetch_google_packages()
+    click.echo(f"NashDigs: fetched {len(packages)} Google-owned package(s).")
+
+    # Sanity check — make sure the fetch looks right before touching the DB
+    if packages:
+        statuses: dict[str, int] = {}
+        for p in packages:
+            statuses[p.status or "(null)"] = statuses.get(p.status or "(null)", 0) + 1
+        click.echo(f"  by status: {statuses}")
+        click.echo(f"  sample names: {[p.project_name for p in packages[:5]]}")
+
+    if dry_run:
+        click.echo("\n[DRY RUN — nothing written]")
+        return
+
+    if not packages:
+        click.echo("Empty response — leaving existing cache alone.")
+        return
+
+    from tn811.db import get_session
+
+    now = datetime.now(timezone.utc)
+    with get_session() as session:
+        stats = upsert_packages(session, packages, now)
+    click.echo(
+        f"DB sync: +{stats['new']} new  ~{stats['updated']} updated  "
+        f"={stats['unchanged']} unchanged  -{stats['deleted']} deleted"
+    )
+
+
 # ── refetch-details ───────────────────────────────────────────────────────────
 
 @main.command("refetch-details")
