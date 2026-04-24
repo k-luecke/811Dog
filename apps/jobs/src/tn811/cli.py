@@ -189,15 +189,19 @@ def _worth_detail_fetch(row) -> bool:
 
 
 async def _process_ticket_row(
-    row, ctx, cfg, detail_adapter, matcher, dry_run, stats, now
+    row, ctx, cfg, detail_adapter, matcher, dry_run, stats, now,
+    force_fetch_detail: bool = False,
 ):
     from tn811.db import get_session
     from tn811.models import ORMTicket, ORMTicketSnapshot, normalized_to_orm_dict
     from tn811.normalize.tickets import normalize_ticket
 
-    # Fetch detail page only for GFiber candidates — ~50-500 per county vs 11,000+
+    # Fetch detail page only for GFiber candidates — ~50-500 per county vs 11,000+.
+    # `force_fetch_detail=True` bypasses the CSV-row pre-filter (used by
+    # refetch-details for tickets already classified GFiber in the DB whose
+    # row fields don't trip `_worth_detail_fetch`).
     detail = None
-    if row.detail_url and _worth_detail_fetch(row):
+    if row.detail_url and (force_fetch_detail or _worth_detail_fetch(row)):
         try:
             detail = await detail_adapter.fetch(ctx, row.ticket_number, row.county, row.detail_url)
         except Exception as exc:
@@ -744,6 +748,137 @@ def rescore(config_path: str, dry_run: bool):
             click.echo(f"  {line}")
     if dry_run:
         click.echo("\n[DRY RUN — no changes written]")
+
+
+# ── refetch-details ───────────────────────────────────────────────────────────
+
+@main.command("refetch-details")
+@click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
+@click.option("--dry-run", is_flag=True, help="List targets without hitting the portal.")
+def refetch_details(config_path: str, dry_run: bool):
+    """
+    Fetch detail pages for GFiber tickets that have no saved HTML snapshot.
+
+    Typical use: you added a new relevance rule, ran `rescore`, and some rows
+    now show is_gfiber_related=True but their detail was never fetched under
+    the older pre-filter. This command downloads the portal's CSV export (to
+    resolve the portal-internal ticketId needed for the detail URL), filters
+    to only the rows that need detail, fetches those detail pages, and
+    upserts them with full utility_statuses + location + rollups.
+
+    Scope is inferred from the DB — no --county flag needed. If a target
+    ticket's call_date is outside the portal's current 30-day search window
+    it won't appear in the CSV and will be reported as "not found in CSV".
+    """
+    cfg = _load_app(config_path)
+
+    from tn811.db import get_session
+    from tn811.models import ORMTicket
+
+    with get_session() as session:
+        targets = (
+            session.query(ORMTicket.ticket_number, ORMTicket.county)
+            .filter(
+                ORMTicket.is_gfiber_related == True,  # noqa: E712
+                ORMTicket.source_html_path.is_(None),
+            )
+            .all()
+        )
+
+    if not targets:
+        click.echo("No GFiber tickets missing detail — nothing to do.")
+        return
+
+    by_county: dict[str, set[str]] = {}
+    for ticket_number, county in targets:
+        by_county.setdefault(county, set()).add(ticket_number)
+
+    click.echo(
+        f"Found {len(targets)} GFiber ticket(s) missing detail "
+        f"across {len(by_county)} county(ies):"
+    )
+    for county_name, nums in sorted(by_county.items()):
+        click.echo(f"  {county_name}: {len(nums)}")
+
+    if dry_run:
+        click.echo("\n[DRY RUN — no portal fetch]")
+        return
+
+    asyncio.run(_run_refetch_details(cfg, by_county))
+
+
+async def _run_refetch_details(cfg, by_county: dict[str, set[str]]):
+    from datetime import timedelta
+
+    from tn811.portal.browser import browser_context
+    from tn811.portal.detail import DetailAdapter
+    from tn811.portal.search import SearchAdapter
+    from tn811.relevance.matcher import RelevanceMatcher
+
+    matcher = RelevanceMatcher(cfg.relevance)
+    search_adapter = SearchAdapter(cfg.portal, cfg.paths.raw_html_dir)
+    detail_adapter = DetailAdapter(cfg.portal, cfg.paths.raw_html_dir)
+
+    now = datetime.now(timezone.utc)
+    date_to = now.date()
+    date_from = date_to - timedelta(days=cfg.portal.date_window_days)
+
+    # Resolve counties: match DB county strings to config by name
+    config_counties = {c.name: c for c in cfg.active_counties}
+    missing_cfg = set(by_county) - set(config_counties)
+    if missing_cfg:
+        click.echo(
+            f"Warning: no config entry for county(ies) {sorted(missing_cfg)}; skipping those.",
+            err=True,
+        )
+    target_counties = [config_counties[name] for name in by_county if name in config_counties]
+
+    stats = {"new": 0, "changed": 0, "unchanged": 0, "failures": 0}
+    total_attempted = 0
+    total_not_in_csv = 0
+
+    async with browser_context(cfg.portal) as ctx:
+        for county in target_counties:
+            remaining = set(by_county[county.name])
+            click.echo(f"\n  {county.name}: searching CSV for {len(remaining)} target(s)...")
+
+            async for row in search_adapter.search_county(ctx, county, date_from, date_to):
+                if row.ticket_number not in remaining:
+                    continue
+
+                total_attempted += 1
+                try:
+                    await _process_ticket_row(
+                        row, ctx, cfg, detail_adapter,
+                        matcher, dry_run=False, stats=stats, now=now,
+                        force_fetch_detail=True,
+                    )
+                    remaining.discard(row.ticket_number)
+                    click.echo(
+                        f"    ✓ {row.ticket_number} "
+                        f"(excavator={row.excavator_name_raw or '?'})"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "refetch-details: failed to process row",
+                        extra={"ticket": row.ticket_number, "error": str(exc)},
+                        exc_info=exc,
+                    )
+                    stats["failures"] += 1
+
+            if remaining:
+                total_not_in_csv += len(remaining)
+                click.echo(
+                    f"    {len(remaining)} target(s) not found in current CSV export "
+                    "(likely outside the 30-day search window)."
+                )
+
+    click.echo(
+        f"\nDone: {total_attempted} attempted  |  "
+        f"{stats['new']} new + {stats['changed']} updated + "
+        f"{stats['unchanged']} hash-unchanged  |  "
+        f"{stats['failures']} failures  |  {total_not_in_csv} not in CSV"
+    )
 
 
 # ── reparse-details ───────────────────────────────────────────────────────────
