@@ -272,6 +272,11 @@ class ORMTicket(Base):
     secondary_latitude = Column(Float)
     secondary_longitude = Column(Float)
 
+    # NashDigs package attribution (populated by `tn811 match-nashdigs`)
+    nashdigs_project_name = Column(String(64), index=True)
+    nashdigs_match_confidence = Column(String(16), index=True)  # high|medium|low|none
+    nashdigs_distance_m = Column(Float)
+
     utility_references = Column(JSON)       # list[str]
     utility_responses = Column(JSON)        # list[dict]
     utility_codes = Column(JSON)            # list[str] — short codes like ["GFI", "NES"]

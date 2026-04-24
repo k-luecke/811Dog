@@ -117,6 +117,25 @@ MASTER_FILES: tuple[str, ...] = (
     "gfiber_by_sub.csv",
     "gfiber_utility_detail.csv",
     "gfiber_cancelled_7d.csv",
+    "unassigned_tickets_for_review.csv",
+)
+
+UNASSIGNED_REVIEW_COLUMNS: tuple[str, ...] = (
+    "ticket_number",
+    "call_date",
+    "expire_date",
+    "days_until_expire",
+    "county",
+    "excavator_name",
+    "address",
+    "intersection",
+    "latitude",
+    "longitude",
+    "candidate_project_name",
+    "distance_m",
+    "done_for",
+    "utility_summary",
+    "remarks",
 )
 
 
@@ -154,6 +173,9 @@ class TicketView:
     longitude: float | None = None
     secondary_latitude: float | None = None
     secondary_longitude: float | None = None
+    nashdigs_project_name: str | None = None
+    nashdigs_match_confidence: str | None = None
+    nashdigs_distance_m: float | None = None
     utility_statuses: list[dict] = field(default_factory=list)
 
 
@@ -345,6 +367,9 @@ def ticket_view_from_orm(t: ORMTicket, now_ct: datetime) -> TicketView:
         longitude=t.longitude,
         secondary_latitude=t.secondary_latitude,
         secondary_longitude=t.secondary_longitude,
+        nashdigs_project_name=getattr(t, "nashdigs_project_name", None),
+        nashdigs_match_confidence=getattr(t, "nashdigs_match_confidence", None),
+        nashdigs_distance_m=getattr(t, "nashdigs_distance_m", None),
         utility_statuses=utility_statuses,
     )
 
@@ -424,6 +449,12 @@ def write_exports(
     detail_path = out_dir / "gfiber_utility_detail.csv"
     detail_row_count = _write_utility_detail_csv(detail_path, active, today)
     summaries.append(_summarize_file(detail_path, detail_row_count))
+
+    # NashDigs low-confidence tickets — manual review list
+    review_path = out_dir / "unassigned_tickets_for_review.csv"
+    review_rows = [v for v in active if v.nashdigs_match_confidence == "low"]
+    _write_unassigned_review_csv(review_path, review_rows)
+    summaries.append(_summarize_file(review_path, len(review_rows)))
 
     # Stable manifest order matches MASTER_FILES
     summaries = _order_summaries(summaries)
@@ -645,6 +676,44 @@ def _write_by_sub_csv(path: Path, rollups: Sequence[SubRollup]) -> None:
                     _fmt_date(r.earliest_expire_date),
                     _fmt_date(r.latest_call_date),
                     r.primary_county,
+                ]
+            )
+
+
+def _write_unassigned_review_csv(
+    path: Path,
+    views: Sequence[TicketView],
+) -> None:
+    """Tickets with NashDigs match_confidence == 'low' — supervisor review list.
+
+    Sorted by distance ascending so the closest-but-still-uncertain matches
+    float to the top of the file for quick triage.
+    """
+    sorted_views = sorted(
+        views,
+        key=lambda v: (v.nashdigs_distance_m is None, v.nashdigs_distance_m or 0.0),
+    )
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+        writer.writerow(UNASSIGNED_REVIEW_COLUMNS)
+        for v in sorted_views:
+            writer.writerow(
+                [
+                    v.ticket_number,
+                    _fmt_date(v.call_date),
+                    _fmt_date(v.expire_date),
+                    "" if v.days_until_expire is None else v.days_until_expire,
+                    v.county,
+                    v.excavator_name,
+                    v.address,
+                    v.intersection,
+                    "" if v.latitude is None else f"{v.latitude:.6f}",
+                    "" if v.longitude is None else f"{v.longitude:.6f}",
+                    v.nashdigs_project_name or "",
+                    "" if v.nashdigs_distance_m is None else f"{v.nashdigs_distance_m:.1f}",
+                    v.done_for,
+                    v.utility_summary,
+                    v.remarks,
                 ]
             )
 
