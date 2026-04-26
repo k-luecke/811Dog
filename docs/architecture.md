@@ -105,6 +105,27 @@ The React dashboard reads only from pre-generated JSON files. It makes no live c
 ### 6. Work-group inference (not subcontractor tracking)
 Work groups are inferred using Jaccard similarity on company name + work type tokens. This clusters tickets from the same apparent crew without requiring a hardcoded company list. The threshold is configurable.
 
+### 7. Public/private data boundary
+The public TN811 pipeline is the product core: scrape, normalize, score, group, store, and export must continue to work with public records only. Customer-owned data belongs behind explicit integration interfaces and must enrich public tickets without mutating the public source record.
+
+The boundary is represented in code by:
+
+| Module | Purpose |
+|---|---|
+| `data_boundary.py` | Data classifications, domains, export policies, tenant context |
+| `integrations/interfaces.py` | Provider/enricher protocols for customer private data |
+
+Allowed data classes:
+
+| Classification | Meaning | Public export allowed |
+|---|---|---|
+| `public` | Public source records, such as TN811 or public GIS | Yes |
+| `derived` | Scores, groupings, or analytics derived from allowed inputs | Yes |
+| `customer_private` | Customer projects, assets, work orders, CRM, crews | No |
+| `restricted` | Contract-sensitive, regulated, or specially controlled data | No |
+
+Private data should be joined after normalization through a customer-scoped enricher. Exporters must validate classified values against an explicit `ExportPolicy` before writing data outside the tenant boundary.
+
 ## Database Schema
 
 See `models.py` for the full ORM definition. Key tables:
