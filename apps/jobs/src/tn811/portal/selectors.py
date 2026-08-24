@@ -123,7 +123,7 @@ class DetailPage:
         "remarks": "remarks",
         "comments": "remarks",
         "additional information": "remarks",
-        # relevant-critical: who the work is being done for
+        # Relevance-critical: who the work is being done for
         "done for": "done_for",
         "done for company": "done_for",
         "work done for": "done_for",

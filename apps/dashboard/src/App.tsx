@@ -81,7 +81,7 @@ export default function App() {
               TN811 Monitor
             </h1>
             <p className="text-xs text-gray-400">
-              relevant-related excavation ticket tracker — Davidson &amp; Rutherford Counties
+              relevant excavation ticket tracker — Davidson &amp; Rutherford Counties
             </p>
           </div>
           <div className="text-right">
@@ -166,7 +166,7 @@ export default function App() {
             {active.data && (
               <TicketTable
                 tickets={filteredActive}
-                title="Active relevant-Related Tickets"
+                title="Active Relevant Tickets"
                 emptyMessage="No active relevant tickets found."
               />
             )}
@@ -196,7 +196,7 @@ export default function App() {
             {changes.data && (
               <TicketTable
                 tickets={filteredChanges}
-                title="Recently Changed relevant Tickets"
+                title="Recently Changed Relevant Tickets"
                 emptyMessage="No recent changes detected."
               />
             )}

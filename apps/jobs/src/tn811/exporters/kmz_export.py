@@ -486,7 +486,7 @@ def _load_views(
     contractor_other_orm = (
         session.query(ORMTicket)
         .filter(ORMTicket.is_relevant == False)  # noqa: E712
-        .filter(ORMTicket.done_for.ilike("%meridian cable%"))
+        .filter(ORMTicket.done_for.ilike("%Meridian Cable%"))
         .all()
     )
     contractor_other_views = [ticket_view_from_orm(t, now_ct) for t in contractor_other_orm]

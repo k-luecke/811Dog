@@ -126,7 +126,8 @@ def in_memory_db(tmp_path):
 def base_config():
     """Return a minimal AppConfig suitable for unit tests."""
     from tn811.config import (
-        AppConfig, CountyConfig, DbConfig, RelevanceConfig,
+        AppConfig, CountyConfig, DbConfig, ContractorRule,
+    RelevanceConfig,
         RelevanceRule, RelevanceOverrides, GroupingConfig,
         RemindersConfig, PathsConfig,
     )
@@ -141,8 +142,8 @@ def base_config():
         positive_rules=[
             RelevanceRule(id="northstar_fiber", field="any", match_type="contains",
                           pattern="northstar fiber", weight=1.0, case_sensitive=False),
-            RelevanceRule(id="relevant", field="any", match_type="contains",
-                          pattern="relevant", weight=1.0, case_sensitive=False),
+            RelevanceRule(id="brand_shorthand", field="any", match_type="contains",
+                          pattern="northstar", weight=1.0, case_sensitive=False),
             RelevanceRule(id="fiber_install", field="any", match_type="regex",
                           pattern=r"fiber\s+install", weight=0.75, case_sensitive=False),
             RelevanceRule(id="ftth", field="any", match_type="contains",
@@ -152,13 +153,19 @@ def base_config():
             RelevanceRule(id="fiber_generic", field="any", match_type="contains",
                           pattern="fiber", weight=0.30, case_sensitive=False),
             RelevanceRule(id="done_for_prime_contractor", field="done_for", match_type="contains",
-                          pattern="meridian cable", weight=1.0, case_sensitive=False),
+                          pattern="Meridian Cable", weight=1.0, case_sensitive=False),
         ],
         negative_rules=[
             RelevanceRule(id="water_only", field="work_type", match_type="regex",
                           pattern=r"^water/sewer$", weight=-0.50, case_sensitive=False),
         ],
         overrides=RelevanceOverrides(include=[], exclude=[]),
+        contractor_rule=ContractorRule(
+            contractor_keywords=["north ridge", "coastal underground", "lakeside"],
+            work_keywords=["fiber", "conduit", "telecom", "boring"],
+        ),
+        detail_fetch_done_for=["northstar fiber", "meridian cable"],
+        detail_fetch_work_types=["fiber optic", "ftth", "fiber instl", "fiber bury"],
     )
     cfg.grouping = GroupingConfig(cluster_similarity_threshold=0.60)
     return cfg

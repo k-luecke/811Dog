@@ -8,7 +8,7 @@ each folder containing up to three files (active / expiring_7d / late_utilities)
 
 Design:
   load_ticket_views(session, now_ct)
-      → list[TicketView]  — one per relevant-related ticket, fields denormalized
+      → list[TicketView]  — one per relevant ticket, fields denormalized
                             and derivations (days_until_expire, utility_summary,
                             status) precomputed against now_ct.
   write_exports(views, out_dir, sub_slices, now_ct)
@@ -346,7 +346,7 @@ def mirror_to_desktop(src_dir: Path, dest_dir: Path) -> bool:
 
 
 def load_ticket_views(session: Session, now_ct: datetime) -> list[TicketView]:
-    """Load all relevant-related tickets from the DB and compute per-ticket derivations."""
+    """Load all relevant tickets from the DB and compute per-ticket derivations."""
     tickets: list[ORMTicket] = (
         session.query(ORMTicket).filter(ORMTicket.is_relevant == True).all()  # noqa: E712
     )

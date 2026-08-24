@@ -1,7 +1,7 @@
 """
 connectors/nashdigs_match.py — spatial join tickets → NashDigs packages.
 
-Every relevant-related ticket with lat/lon is tested against the cached
+Every relevant ticket with lat/lon is tested against the cached
 Northstar-owned NashDigs polylines. The nearest polyline (measured in meters,
 after reprojecting to UTM Zone 16N) determines the ticket's package_id and
 a confidence tier:

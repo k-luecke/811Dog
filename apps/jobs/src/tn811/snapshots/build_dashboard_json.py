@@ -6,7 +6,7 @@ The dashboard React app reads only these files — no live DB or portal calls.
 
 Output files:
   summary.json         KPI counts
-  tickets_active.json  Active relevant-related tickets
+  tickets_active.json  Active relevant tickets
   tickets_expiring.json Tickets expiring in the next N days
   by_county.json       Per-county breakdowns
   by_work_group.json   Per-work-group breakdowns
@@ -151,7 +151,7 @@ def build_all(session: Session, config: AppConfig) -> None:
         {
             "generated_at": now.isoformat(),
             "total_tickets": total_tickets,
-            "relevant_related": total_relevant,
+            "relevant": total_relevant,
             "active_relevant": len(active_tickets),
             "expiring_soon": len(expiring),
             "cancelled": total_cancelled,

@@ -1,14 +1,17 @@
 """
-Tests for the Meridian Cable classification story:
+Tests for the prime-contractor classification story:
 
-  1. `_worth_detail_fetch` in cli.py — the row-level pre-filter that decides
-     whether a CSV row is worth fetching the detail page for. Must accept
-     "meridian cable" in WorkDoneFor so Summit Underground / Lakeside tickets trigger
-     a full fetch at scrape time.
+  1. `_worth_detail_fetch` in cli.py — the row-level pre-filter deciding whether
+     a search-results row is worth fetching a detail page for. A prime
+     contractor named in WorkDoneFor must trigger a full fetch at scrape time,
+     so tickets filed by its subcontractors are not silently ingested row-only.
 
-  2. `rescore` CLI command — re-runs the current relevance rules against every
-     ticket already in the DB, so changes to rules or the addition of a new
-     prime signal surface existing tickets without a rescrape.
+  2. `rescore` CLI command — re-runs the current relevance rules over every
+     ticket already in the DB, so a rule change surfaces existing tickets
+     without a rescrape.
+
+All contractor and work-type signals come from config; the fixture below stands
+in for a deployment's own `relevance` section.
 """
 from __future__ import annotations
 
@@ -16,6 +19,17 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from tn811.cli import _worth_detail_fetch
+from tn811.config import ContractorRule, RelevanceConfig
+
+# Stands in for a deployment's configured relevance section.
+_RELEVANCE = RelevanceConfig(
+    detail_fetch_done_for=["northstar fiber", "meridian cable"],
+    detail_fetch_work_types=["fiber optic", "ftth", "fiber instl", "fiber bury"],
+    contractor_rule=ContractorRule(
+        contractor_keywords=["north ridge", "coastal underground", "lakeside"],
+        work_keywords=["fiber", "conduit", "telecom", "boring"],
+    ),
+)
 
 
 def _row(
@@ -37,20 +51,20 @@ def _row(
 
 class TestWorthDetailFetch:
     def test_prime_contractor_in_done_for_triggers_fetch(self):
-        assert _worth_detail_fetch(_row(work_done_for="MERIDIAN CABLE CONSTRUCTION"))
-        assert _worth_detail_fetch(_row(work_done_for="Meridian Cable/Northstar Fiber"))
-        assert _worth_detail_fetch(_row(work_done_for="meridian cable"))
+        assert _worth_detail_fetch(_row(work_done_for="MERIDIAN CABLE CONSTRUCTION"), _RELEVANCE)
+        assert _worth_detail_fetch(_row(work_done_for="Meridian Cable/Northstar Fiber"), _RELEVANCE)
+        assert _worth_detail_fetch(_row(work_done_for="Meridian Cable"), _RELEVANCE)
 
     def test_target_in_done_for_still_triggers_fetch(self):
-        assert _worth_detail_fetch(_row(work_done_for="NORTHSTAR FIBER"))
-        assert _worth_detail_fetch(_row(work_done_for="NORTHSTAR FIBER 6459663"))
+        assert _worth_detail_fetch(_row(work_done_for="NORTHSTAR FIBER"), _RELEVANCE)
+        assert _worth_detail_fetch(_row(work_done_for="NORTHSTAR FIBER 6459663"), _RELEVANCE)
 
     def test_tracked_contractor_excavator_triggers_fetch(self):
-        assert _worth_detail_fetch(_row(excavator="NORTH RIDGE CONTRACTORS"))
+        assert _worth_detail_fetch(_row(excavator="NORTH RIDGE CONTRACTORS"), _RELEVANCE)
 
     def test_fiber_work_type_triggers_fetch(self):
-        assert _worth_detail_fetch(_row(work_type="FIBER INSTL"))
-        assert _worth_detail_fetch(_row(work_type="FIBER OPTIC INSTALLATION"))
+        assert _worth_detail_fetch(_row(work_type="FIBER INSTL"), _RELEVANCE)
+        assert _worth_detail_fetch(_row(work_type="FIBER OPTIC INSTALLATION"), _RELEVANCE)
 
     def test_unrelated_row_does_not_trigger_fetch(self):
         assert not _worth_detail_fetch(
@@ -58,12 +72,13 @@ class TestWorthDetailFetch:
                 work_done_for="CENTURY COMMUNITIES",
                 excavator="RANDOM PLUMBER",
                 work_type="WATER SEWER REPAIR",
-            )
+            ),
+            _RELEVANCE,
         )
 
     def test_namesake_person_does_not_trigger(self):
-        """The 'JEFF MERIDIAN' namesake in done_for is not 'meridian cable' — no fetch."""
-        assert not _worth_detail_fetch(_row(work_done_for="JEFF MERIDIAN"))
+        """The 'JEFF MERIDIAN' namesake in done_for is not 'Meridian Cable' — no fetch."""
+        assert not _worth_detail_fetch(_row(work_done_for="JEFF MERIDIAN"), _RELEVANCE)
 
 
 # ── rescore ───────────────────────────────────────────────────────────────────
@@ -131,7 +146,7 @@ def test_rescore_flips_previously_unflagged_ticket(in_memory_db, base_config):
                     "score_threshold": 0.45,
                     "positive_rules": [
                         {"id": "done_for_prime_contractor", "field": "done_for",
-                         "match_type": "contains", "pattern": "meridian cable",
+                         "match_type": "contains", "pattern": "Meridian Cable",
                          "weight": 1.0, "case_sensitive": False},
                     ],
                     "negative_rules": [],
@@ -209,7 +224,7 @@ def test_rescore_dry_run_does_not_write(in_memory_db):
                     "score_threshold": 0.45,
                     "positive_rules": [
                         {"id": "done_for_prime_contractor", "field": "done_for",
-                         "match_type": "contains", "pattern": "meridian cable",
+                         "match_type": "contains", "pattern": "Meridian Cable",
                          "weight": 1.0, "case_sensitive": False},
                     ],
                     "negative_rules": [],

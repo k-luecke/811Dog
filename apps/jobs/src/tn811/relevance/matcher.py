@@ -1,5 +1,5 @@
 """
-relevance/matcher.py — Relevance scoring engine for relevant ticket detection.
+relevance/matcher.py — Relevance scoring engine.
 
 Computes:
   - relevance_score: float 0.0–1.0
@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from tn811.config import RelevanceConfig
+from tn811.config import ContractorRule, RelevanceConfig
 from tn811.models import NormalizedTicket
 from tn811.relevance.rules import CompiledRule, compile_rules
 
@@ -38,24 +38,6 @@ _ANY_FIELDS = [
     "raw_text",
 ]
 
-# Subcontractor keyword substrings (normalized lowercase, no punctuation)
-# A ticket scores as relevant-related if excavator matches one of these AND
-# work_type contains a fiber/telecom keyword.  Handled by config rules but
-# normalization is applied here so rules can use simple "contains" patterns.
-_SUBCONTRACTOR_KEYWORDS = [
-    "north ridge",
-    "coastal underground",
-    "verity",
-    "dtx",
-    "lakeside",
-    "ridgeline",
-    "ama",
-]
-
-_FIBER_WORK_KEYWORDS = [
-    "fiber", "conduit", "telecom", "boring",
-]
-
 
 @dataclass
 class RelevanceResult:
@@ -66,7 +48,7 @@ class RelevanceResult:
 
 class RelevanceMatcher:
     """
-    Evaluates ticket relevance to relevant / fiber-installation work.
+    Evaluates ticket relevance to the tracked work type.
 
     Usage:
         matcher = RelevanceMatcher(config.relevance)
@@ -81,6 +63,7 @@ class RelevanceMatcher:
         self._threshold = config.score_threshold
         self._include_overrides = set(t.upper() for t in config.overrides.include)
         self._exclude_overrides = set(t.upper() for t in config.overrides.exclude)
+        self._contractor_rule = config.contractor_rule
         self._pos_rules, self._neg_rules = compile_rules(config)
 
         logger.info(
@@ -143,11 +126,11 @@ class RelevanceMatcher:
 
         final_score = max(0.0, min(1.0, pos_score - neg_score))
 
-        # Hard signal: subcontractor keyword match + fiber work type
-        # This fires even if no other rules matched (score boost to threshold)
-        if not final_score >= self._threshold and _matches_subcontractor_keywords(ticket):
+        # Compound signal: a tracked contractor doing the tracked kind of work.
+        # Lifts a ticket to the threshold even when no weighted rule fired.
+        if final_score < self._threshold and _matches_contractor_rule(ticket, self._contractor_rule):
             final_score = max(final_score, self._threshold)
-            reasons.append("+subcontractor_keyword_match")
+            reasons.append("+contractor_rule_match")
 
         is_relevant = final_score >= self._threshold
 
@@ -207,23 +190,29 @@ def _build_field_texts(ticket: NormalizedTicket) -> dict[str, str]:
     return texts
 
 
-def _matches_subcontractor_keywords(ticket: NormalizedTicket) -> bool:
+def _matches_contractor_rule(ticket: NormalizedTicket, rule: ContractorRule) -> bool:
     """
-    Return True if the excavator matches a known relevant subcontractor keyword
-    AND the work type contains a fiber/telecom keyword.
+    Return True if the excavator matches one of the rule's contractor keywords
+    AND the work type or remarks match one of its work keywords.
 
-    Both checks use normalized text (lowercase, no punctuation).
+    Both sides are required: a tracked contractor doing unrelated work is not a
+    hit, and neither is an unknown contractor doing the right kind of work — the
+    weighted rules already cover that case. Comparison uses normalized text
+    (lowercase, punctuation stripped) so "north ridge" matches "NORTH RIDGE,
+    LLC.". Returns False when either keyword list is empty, so a deployment that
+    does not track contractors simply gets no compound signal.
     """
-    excavator_norm = _normalize_text(ticket.excavator_name or "")
-    work_norm = _normalize_text(ticket.work_type or "")
-    remarks_norm = _normalize_text(ticket.remarks or "")
-
-    excavator_match = any(kw in excavator_norm for kw in _SUBCONTRACTOR_KEYWORDS)
-    if not excavator_match:
+    if not rule.is_enabled():
         return False
 
-    combined_work = work_norm + " " + remarks_norm
-    return any(kw in combined_work for kw in _FIBER_WORK_KEYWORDS)
+    excavator_norm = _normalize_text(ticket.excavator_name or "")
+    if not any(kw in excavator_norm for kw in rule.contractor_keywords):
+        return False
+
+    combined_work = _normalize_text(
+        (ticket.work_type or "") + " " + (ticket.remarks or "")
+    )
+    return any(kw in combined_work for kw in rule.work_keywords)
 
 
 def _apply_rule(rule: CompiledRule, field_texts: dict[str, str]) -> bool:

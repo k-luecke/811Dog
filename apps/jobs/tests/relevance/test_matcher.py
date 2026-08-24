@@ -30,7 +30,7 @@ class TestRelevanceMatcher:
 
     def test_brand_in_excavator_name_scores_high(self, base_config):
         matcher = RelevanceMatcher(base_config.relevance)
-        ticket = _make_ticket(excavator_name="relevant Install Crew")
+        ticket = _make_ticket(excavator_name="Fiber Install Crew")
         result = matcher.score(ticket)
         assert result.score >= 0.9
 
@@ -191,7 +191,7 @@ class TestRelevanceMatcher:
         assert isinstance(result, RelevanceResult)
 
     def test_done_for_target_company_scores_high(self, base_config):
-        """done_for field is a primary relevant signal."""
+        """done_for field is a primary relevance signal."""
         from tn811.config import RelevanceRule
         base_config.relevance.positive_rules.append(
             RelevanceRule(
@@ -210,7 +210,7 @@ class TestRelevanceMatcher:
         assert result.is_relevant is True
 
     def test_utility_code_gfi_scores_high(self, base_config):
-        """GFI utility code is a primary relevant signal."""
+        """GFI utility code is a primary relevance signal."""
         from tn811.config import RelevanceRule
         base_config.relevance.positive_rules.append(
             RelevanceRule(
@@ -228,19 +228,26 @@ class TestRelevanceMatcher:
         assert result.score >= 0.9
         assert result.is_relevant is True
 
-    def test_subcontractor_keyword_with_fiber_work_scores_above_threshold(self, base_config):
-        """Subcontractor keyword + fiber work type triggers hard-signal boost."""
+    def test_contractor_rule_with_matching_work_scores_above_threshold(self, base_config):
+        """Tracked contractor + matching work type lifts the ticket to threshold.
+
+        Uses "Conduit placement" deliberately: no weighted rule matches it, so
+        the ticket would score 0.0 and the compound contractor signal is the
+        only thing that can carry it over the line. A work type the weighted
+        rules already match (e.g. "Underground Fiber Installation") would score
+        1.0 on its own and prove nothing about this rule.
+        """
         matcher = RelevanceMatcher(base_config.relevance)
         ticket = _make_ticket(
             excavator_name="North Ridge Construction LLC",
-            work_type="Underground Fiber Installation",
+            work_type="Conduit placement",
         )
         result = matcher.score(ticket)
         assert result.is_relevant is True
-        assert "+subcontractor_keyword_match" in result.reasons
+        assert "+contractor_rule_match" in result.reasons
 
-    def test_subcontractor_keyword_without_fiber_work_does_not_score(self, base_config):
-        """Subcontractor name alone (water/sewer work) should NOT trigger."""
+    def test_contractor_rule_without_matching_work_does_not_score(self, base_config):
+        """A tracked contractor doing unrelated work must NOT trigger."""
         matcher = RelevanceMatcher(base_config.relevance)
         ticket = _make_ticket(
             excavator_name="North Ridge Construction LLC",
@@ -249,4 +256,4 @@ class TestRelevanceMatcher:
         result = matcher.score(ticket)
         # Should not reach threshold from subcontractor match alone since
         # work type doesn't contain fiber/telecom/conduit/boring
-        assert "+subcontractor_keyword_match" not in result.reasons
+        assert "+contractor_rule_match" not in result.reasons

@@ -43,7 +43,7 @@ class TicketRow:
     Lightweight record from a single row of the CSV export.
 
     This is a pre-normalization snapshot. Detail page fetch is gated by
-    _worth_detail_fetch() in cli.py — only relevant candidates are fetched.
+    _worth_detail_fetch() in cli.py — only relevance candidates are fetched.
     """
     ticket_number: str           # CSV 'Number' — human-readable ticket ID
     county: str

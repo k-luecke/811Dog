@@ -31,7 +31,7 @@ export interface Ticket {
 export interface Summary {
   generated_at: string;
   total_tickets: number;
-  relevant_related: number;
+  relevant: number;
   active_relevant: number;
   expiring_soon: number;
   cancelled: number;

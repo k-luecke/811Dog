@@ -30,7 +30,7 @@ def render_plain_text(
     lines.append("=" * 60)
     lines.append(f"")
     lines.append(
-        f"The following {len(tickets)} relevant-related ticket(s) "
+        f"The following {len(tickets)} relevant ticket(s) "
         f"expire on {target_expiration.strftime('%B %d, %Y')} "
         f"({lead_days} days from today)."
     )
@@ -111,7 +111,7 @@ def render_html(
 <body style="font-family:Arial,sans-serif;color:#222;max-width:900px;margin:0 auto;">
   <h2 style="color:#1a56db;">TN811 Ticket Expiry Reminder</h2>
   <p>
-    The following <strong>{len(tickets)}</strong> relevant-related ticket(s) expire on
+    The following <strong>{len(tickets)}</strong> relevant ticket(s) expire on
     <strong>{target_expiration.strftime('%B %d, %Y')}</strong>
     ({lead_days} days from today).
   </p>

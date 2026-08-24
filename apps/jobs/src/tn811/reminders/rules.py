@@ -3,7 +3,7 @@ reminders/rules.py — Eligibility rules for ticket expiry reminders.
 
 Determines which tickets qualify for a reminder email based on:
 - Expiration date is exactly lead_days from today (in the configured timezone)
-- Ticket is relevant-related
+- Ticket is relevant
 - Ticket is not cancelled or already expired
 - No reminder has already been sent for this ticket+expiration+lead_days combo
 
@@ -79,7 +79,7 @@ def filter_eligible_tickets(
     Filter a list of tickets to those eligible for a reminder.
 
     Args:
-        tickets:           All relevant-related active tickets.
+        tickets:           All relevant active tickets.
         target_expiration: The expiration date to match.
 
     Returns:

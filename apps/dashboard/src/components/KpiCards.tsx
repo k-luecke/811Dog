@@ -50,12 +50,12 @@ export function KpiCards({ summary }: Props) {
         accent="gray"
       />
       <KpiCard
-        label="relevant Related"
-        value={summary.relevant_related}
+        label="Relevant"
+        value={summary.relevant}
         accent="blue"
       />
       <KpiCard
-        label="Active relevant"
+        label="Active Relevant"
         value={summary.active_relevant}
         accent="green"
         sub="not expired or cancelled"

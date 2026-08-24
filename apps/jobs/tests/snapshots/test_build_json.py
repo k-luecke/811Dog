@@ -52,7 +52,7 @@ class TestBuildAll:
         data = json.loads(summary_path.read_text())
         assert "total_tickets" in data
         assert data["total_tickets"] == 2
-        assert data["relevant_related"] == 1
+        assert data["relevant"] == 1
 
     def test_tickets_active_json_created(self, in_memory_db, tmp_path):
         with get_session() as session:

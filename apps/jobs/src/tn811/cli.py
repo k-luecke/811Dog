@@ -126,7 +126,7 @@ async def _run_scrape(cfg, counties, dry_run: bool):
                         if not dry_run:
                             _record_failure(row.ticket_number, row.county, exc)
 
-        # Run work-group inference on all relevant-related active tickets
+        # Run work-group inference on all relevant active tickets
         if not dry_run:
             _run_grouping(cfg)
 
@@ -162,30 +162,32 @@ async def _run_scrape(cfg, counties, dry_run: bool):
     )
 
 
-_TRACKED_CONTRACTORS: frozenset[str] = frozenset({
-    "delta cable", "coastal underground", "north ridge", "dtx",
-    "lakeside", "verity", "ridgeline",
-})
+def _worth_detail_fetch(row, relevance_cfg) -> bool:
+    """Return True if this row is worth fetching a detail page for.
 
+    The search-results grid carries only a handful of columns; the detail page
+    adds utility statuses and full remarks that the scorer relies on. Fetching
+    every row would mean tens of thousands of requests per run, so this is a
+    cheap pre-filter, deliberately biased toward fetching.
 
-def _worth_detail_fetch(row) -> bool:
-    """Return True if this row is a plausible relevant ticket worth fetching detail for.
-
-    Kept in sync with the relevance rules' primary `done_for` signals. "meridian cable"
-    is listed here so Meridian-subcontracted work (Summit Underground, Lakeside, etc.)
-    gets its detail page fetched at scrape time — without this, those rows go in
-    row-only and miss the utility-status + full-text context the scorer relies on.
+    Every signal is config-driven (`relevance.detail_fetch_done_for`,
+    `relevance.detail_fetch_work_types`, and `relevance.contractor_rule`)
+    because which firms and work types matter is a property of the deployment,
+    not of this code. With none of them configured no row is pre-filtered in,
+    and the caller falls back to row-only ingestion.
     """
     wdf = (row.work_done_for_raw or "").lower()
     exc = (row.excavator_name_raw or "").lower()
     wt = (row.work_type_raw or "").lower()
-    return (
-        "northstar" in wdf
-        or "relevant" in wdf
-        or "meridian cable" in wdf
-        or any(s in exc for s in _TRACKED_CONTRACTORS)
-        or any(kw in wt for kw in ("fiber optic", "ftth", "fiber instl", "fiber bury"))
-    )
+
+    if any(s in wdf for s in relevance_cfg.detail_fetch_done_for):
+        return True
+    if any(kw in wt for kw in relevance_cfg.detail_fetch_work_types):
+        return True
+
+    contractors = relevance_cfg.contractor_rule.contractor_keywords
+    return bool(contractors) and any(s in exc for s in contractors)
+
 
 
 async def _process_ticket_row(
@@ -196,12 +198,12 @@ async def _process_ticket_row(
     from tn811.models import ORMTicket, ORMTicketSnapshot, normalized_to_orm_dict
     from tn811.normalize.tickets import normalize_ticket
 
-    # Fetch detail page only for relevant candidates — ~50-500 per county vs 11,000+.
+    # Fetch detail page only for relevance candidates — ~50-500 per county vs 11,000+.
     # `force_fetch_detail=True` bypasses the CSV-row pre-filter (used by
     # refetch-details for tickets already classified relevant in the DB whose
     # row fields don't trip `_worth_detail_fetch`).
     detail = None
-    if row.detail_url and (force_fetch_detail or _worth_detail_fetch(row)):
+    if row.detail_url and (force_fetch_detail or _worth_detail_fetch(row, cfg.relevance)):
         try:
             detail = await detail_adapter.fetch(ctx, row.ticket_number, row.county, row.detail_url)
         except Exception as exc:
