@@ -43,7 +43,7 @@ def detail_html_live_all_clear() -> str:
 @pytest.fixture
 def detail_html_live_gfi_open() -> str:
     """Live portal format — GFI and U01 still Open (no response)."""
-    return (HTML_DIR / "detail_live_gfi_open.html").read_text()
+    return (HTML_DIR / "detail_live_utility_open.html").read_text()
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ Work Type: Telecom - Underground Fiber Installation
 Location: 123 Main St, Nashville, TN 37201
 Installing underground fiber optic cable along Main St
 
-Remarks: Google Fiber drop bury installation. Boring for fiber conduit.
+Remarks: Northstar Fiber drop bury installation. Boring for fiber conduit.
 FTTH residential buildout. Fiber optic installation project.
 
 Utilities Notified:
@@ -126,7 +126,8 @@ def in_memory_db(tmp_path):
 def base_config():
     """Return a minimal AppConfig suitable for unit tests."""
     from tn811.config import (
-        AppConfig, CountyConfig, DbConfig, RelevanceConfig,
+        AppConfig, CountyConfig, DbConfig, ContractorRule,
+    RelevanceConfig,
         RelevanceRule, RelevanceOverrides, GroupingConfig,
         RemindersConfig, PathsConfig,
     )
@@ -140,9 +141,9 @@ def base_config():
         score_threshold=0.45,
         positive_rules=[
             RelevanceRule(id="google_fiber", field="any", match_type="contains",
-                          pattern="google fiber", weight=1.0, case_sensitive=False),
-            RelevanceRule(id="gfiber", field="any", match_type="contains",
-                          pattern="gfiber", weight=1.0, case_sensitive=False),
+                          pattern="northstar fiber", weight=1.0, case_sensitive=False),
+            RelevanceRule(id="brand_shorthand", field="any", match_type="contains",
+                          pattern="northstar", weight=1.0, case_sensitive=False),
             RelevanceRule(id="fiber_install", field="any", match_type="regex",
                           pattern=r"fiber\s+install", weight=0.75, case_sensitive=False),
             RelevanceRule(id="ftth", field="any", match_type="contains",
@@ -151,14 +152,20 @@ def base_config():
                           pattern="drop bury", weight=0.65, case_sensitive=False),
             RelevanceRule(id="fiber_generic", field="any", match_type="contains",
                           pattern="fiber", weight=0.30, case_sensitive=False),
-            RelevanceRule(id="done_for_ervin_cable", field="done_for", match_type="contains",
-                          pattern="ervin cable", weight=1.0, case_sensitive=False),
+            RelevanceRule(id="done_for_prime_contractor", field="done_for", match_type="contains",
+                          pattern="Meridian Cable", weight=1.0, case_sensitive=False),
         ],
         negative_rules=[
             RelevanceRule(id="water_only", field="work_type", match_type="regex",
                           pattern=r"^water/sewer$", weight=-0.50, case_sensitive=False),
         ],
         overrides=RelevanceOverrides(include=[], exclude=[]),
+        contractor_rule=ContractorRule(
+            contractor_keywords=["north ridge", "coastal underground", "lakeside"],
+            work_keywords=["fiber", "conduit", "telecom", "boring"],
+        ),
+        detail_fetch_done_for=["northstar fiber", "meridian cable"],
+        detail_fetch_work_types=["fiber optic", "ftth", "fiber instl", "fiber bury"],
     )
     cfg.grouping = GroupingConfig(cluster_similarity_threshold=0.60)
     return cfg
@@ -178,7 +185,7 @@ def sample_normalized_ticket():
         caller_name="John Smith",
         work_type="Telecom - Underground Fiber Installation",
         location_text="123 Main St, Nashville, TN 37201",
-        remarks="Google Fiber drop bury installation. FTTH residential buildout.",
-        is_gfiber_related=False,  # will be set by matcher
+        remarks="Northstar Fiber drop bury installation. FTTH residential buildout.",
+        is_relevant=False,  # will be set by matcher
         relevance_score=0.0,
     )

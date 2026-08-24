@@ -43,7 +43,7 @@ class TicketRow:
     Lightweight record from a single row of the CSV export.
 
     This is a pre-normalization snapshot. Detail page fetch is gated by
-    _worth_detail_fetch() in cli.py — only GFiber candidates are fetched.
+    _worth_detail_fetch() in cli.py — only relevance candidates are fetched.
     """
     ticket_number: str           # CSV 'Number' — human-readable ticket ID
     county: str
@@ -54,7 +54,7 @@ class TicketRow:
     excavator_name_raw: str | None = None
     work_type_raw: str | None = None
     status_raw: str | None = None        # CSV 'TicketType' (Normal/Cancelled/etc.)
-    work_done_for_raw: str | None = None  # CSV 'WorkDoneFor' — primary GFiber pre-filter
+    work_done_for_raw: str | None = None  # CSV 'WorkDoneFor' — primary relevant pre-filter
     remarks_raw: str | None = None        # CSV 'Remarks'
 
 

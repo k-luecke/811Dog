@@ -55,11 +55,11 @@ class TestParseDetailHtmlActive:
     def test_remarks_extracted(self, detail_html_active: str):
         record = parse_detail_html(detail_html_active, "TN20240601-100001", "Davidson County", BASE_URL)
         remarks = record.fields.get("remarks") or ""
-        assert "Google Fiber" in remarks or "fiber" in remarks.lower()
+        assert "Northstar Fiber" in remarks or "fiber" in remarks.lower()
 
     def test_done_for_extracted(self, detail_html_active: str):
         record = parse_detail_html(detail_html_active, "TN20240601-100001", "Davidson County", BASE_URL)
-        assert record.fields.get("done_for") == "GOOGLE FIBER"
+        assert record.fields.get("done_for") == "NORTHSTAR FIBER"
 
     def test_utility_codes_extracted(self, detail_html_active: str):
         record = parse_detail_html(detail_html_active, "TN20240601-100001", "Davidson County", BASE_URL)

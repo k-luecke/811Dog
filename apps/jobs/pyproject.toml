@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tn811"
 version = "0.1.0"
-description = "TN811 ticket monitor for GFiber-related excavation work"
+description = "TN811 ticket monitor for relevant excavation work"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",

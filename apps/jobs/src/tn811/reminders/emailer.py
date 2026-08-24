@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 class ReminderEmailer:
     """
-    Sends (or previews) reminder emails for expiring GFiber tickets.
+    Sends (or previews) reminder emails for expiring relevant tickets.
 
     Usage:
         emailer = ReminderEmailer(config.reminders, preview_dir)

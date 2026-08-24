@@ -16,20 +16,20 @@ from tn811.snapshots.build_dashboard_json import build_all
 NOW = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _insert_ticket(session, num, county, status, is_gfiber, expiration="2099-12-31"):
+def _insert_ticket(session, num, county, status, is_relevant, expiration="2099-12-31"):
     t = ORMTicket(
         ticket_number=num,
         county=county,
         state="TN",
         status=status,
         is_cancelled=(status == "cancelled"),
-        relevance_score=0.9 if is_gfiber else 0.1,
-        relevance_reasons=["google_fiber"] if is_gfiber else [],
-        is_gfiber_related=is_gfiber,
+        relevance_score=0.9 if is_relevant else 0.1,
+        relevance_reasons=["google_fiber"] if is_relevant else [],
+        is_relevant=is_relevant,
         expiration_date=expiration,
-        work_type="Fiber Install" if is_gfiber else "Water",
-        excavator_name="Acme Fiber" if is_gfiber else "Metro Water",
-        probable_work_group="Acme Fiber" if is_gfiber else None,
+        work_type="Fiber Install" if is_relevant else "Water",
+        excavator_name="Acme Fiber" if is_relevant else "Metro Water",
+        probable_work_group="Acme Fiber" if is_relevant else None,
         created_at=NOW,
         updated_at=NOW,
     )
@@ -52,7 +52,7 @@ class TestBuildAll:
         data = json.loads(summary_path.read_text())
         assert "total_tickets" in data
         assert data["total_tickets"] == 2
-        assert data["gfiber_related"] == 1
+        assert data["relevant"] == 1
 
     def test_tickets_active_json_created(self, in_memory_db, tmp_path):
         with get_session() as session:

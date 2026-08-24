@@ -2,8 +2,8 @@
 connectors/nashdigs.py — pull Google-owned fiber projects from NashDigs.
 
 NashDigs (Metro Nashville's public project-coordination FeatureServer) hosts
-every active and committed GFiber package as a MultiLineString on Layer 1
-with ProjectName = the BNA### package identifier Google (and Ervin) already
+every active and committed relevant package as a MultiLineString on Layer 1
+with ProjectName = the BNA### package identifier Google (and Meridian) already
 use internally. This connector:
 
   1. Queries the public FeatureServer for all `Owner = 'Google'` line features

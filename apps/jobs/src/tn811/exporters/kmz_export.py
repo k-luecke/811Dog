@@ -4,24 +4,24 @@ exporters/kmz_export.py — Google Earth (Pro) operational view.
 Produces a single .kmz bundle with a three-axis layer hierarchy so the
 supervisor can toggle between views in Google Earth's Places panel:
 
-  Ervin Ops Snapshot — <timestamp>
-  ├── Active GFiber — by urgency           (visible by default)
+  Meridian Ops Snapshot — <timestamp>
+  ├── Active relevant — by urgency           (visible by default)
   │   ├── Expiring ≤ 4 days            (red pins)
   │   ├── Expiring 5–7 days            (orange pins)
   │   ├── Expiring 8+ days             (blue pins)
   │   └── No expire date               (gray pins)
-  ├── Active GFiber — by utility status    (hidden)
+  ├── Active relevant — by utility status    (hidden)
   │   ├── Ready to dig                 (green)
   │   ├── Pending utilities            (yellow)
   │   ├── Has late utilities           (orange)
   │   ├── Blocked — delayed            (orange-red)
   │   └── Blocked — conflict/other     (dark red)
-  ├── Active GFiber — by sub               (hidden)
+  ├── Active relevant — by sub               (hidden)
   │   └── <one folder per excavator>   (deterministic per-sub color)
-  ├── Cancelled GFiber — last 14 days      (hidden)
-  └── Ervin non-GFiber                     (hidden, only if N > 0)
+  ├── Cancelled relevant — last 14 days      (hidden)
+  └── Meridian non-relevant                     (hidden, only if N > 0)
 
-Each active GFiber ticket is rendered three times — once per axis — so the
+Each active relevant ticket is rendered three times — once per axis — so the
 layer toggles in Google Earth work independently. Tickets with late or
 blocking utilities use a caution icon regardless of folder so they stand
 out visually.
@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 HAVERSINE_THRESHOLD_M = 50.0
 CAUTION_ICON_URL = "http://maps.google.com/mapfiles/kml/shapes/caution.png"
-DEFAULT_OUT_PATH = Path("data/exports/ervin_ops_snapshot.kmz")
+DEFAULT_OUT_PATH = Path("data/exports/ops_snapshot.kmz")
 
 # Dig-zone circle approximates the TN811 coordinate's practical accuracy.
 # TN811 geocodes differ from Google Earth imagery alignment by ~20–50 m in urban
@@ -362,9 +362,9 @@ class KmzManifest:
     total_placemarks: int
     folder_counts: dict[str, int]
     skipped_no_coords: int
-    active_gfiber: int
-    cancelled_gfiber_14d: int
-    ervin_non_gfiber: int
+    active_relevant: int
+    cancelled_relevant_14d: int
+    contractor_other: int
     dig_zone_circles: int = 0
     nashdigs_active: int = 0
     nashdigs_committed: int = 0
@@ -397,13 +397,13 @@ def export(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    views_gfiber, views_ervin_non_gf = _load_views(session, now_ct)
+    views_relevant, views_contractor_other = _load_views(session, now_ct)
     nashdigs_google, nashdigs_others = _load_nashdigs(session)
     package_ticket_counts = _load_ticket_package_counts(session)
 
     manifest = _build_and_save(
-        views_gfiber=views_gfiber,
-        views_ervin_non_gf=views_ervin_non_gf,
+        views_relevant=views_relevant,
+        views_contractor_other=views_contractor_other,
         out_path=out_path,
         now_ct=now_ct,
         nashdigs_google=nashdigs_google,
@@ -439,7 +439,7 @@ def _load_nashdigs(
 def _load_ticket_package_counts(
     session: Session,
 ) -> dict[str, dict[str, int]]:
-    """Aggregate counts of GFiber tickets per NashDigs project_name.
+    """Aggregate counts of relevant tickets per NashDigs project_name.
 
     Returns: {project_name: {'total': N, 'high': n, 'medium': n, 'low': n, ...}}
     """
@@ -452,7 +452,7 @@ def _load_ticket_package_counts(
             ORMTicket.is_cancelled,
         )
         .filter(
-            ORMTicket.is_gfiber_related == True,  # noqa: E712
+            ORMTicket.is_relevant == True,  # noqa: E712
             ORMTicket.nashdigs_project_name.isnot(None),
         )
         .all()
@@ -476,26 +476,26 @@ def _load_ticket_package_counts(
 def _load_views(
     session: Session, now_ct: datetime
 ) -> tuple[list[TicketView], list[TicketView]]:
-    """Pull the two groups of tickets the KMZ needs: all GFiber + any
-    Ervin-adjacent tickets that somehow slipped classification."""
-    gfiber_orm = (
-        session.query(ORMTicket).filter(ORMTicket.is_gfiber_related == True).all()  # noqa: E712
+    """Pull the two groups of tickets the KMZ needs: all relevant + any
+    Meridian-adjacent tickets that somehow slipped classification."""
+    relevant_orm = (
+        session.query(ORMTicket).filter(ORMTicket.is_relevant == True).all()  # noqa: E712
     )
-    gfiber_views = [ticket_view_from_orm(t, now_ct) for t in gfiber_orm]
+    relevant_views = [ticket_view_from_orm(t, now_ct) for t in relevant_orm]
 
-    ervin_non_gf_orm = (
+    contractor_other_orm = (
         session.query(ORMTicket)
-        .filter(ORMTicket.is_gfiber_related == False)  # noqa: E712
-        .filter(ORMTicket.done_for.ilike("%ervin cable%"))
+        .filter(ORMTicket.is_relevant == False)  # noqa: E712
+        .filter(ORMTicket.done_for.ilike("%Meridian Cable%"))
         .all()
     )
-    ervin_views = [ticket_view_from_orm(t, now_ct) for t in ervin_non_gf_orm]
-    return gfiber_views, ervin_views
+    contractor_other_views = [ticket_view_from_orm(t, now_ct) for t in contractor_other_orm]
+    return relevant_views, contractor_other_views
 
 
 def _build_and_save(
-    views_gfiber: list[TicketView],
-    views_ervin_non_gf: list[TicketView],
+    views_relevant: list[TicketView],
+    views_contractor_other: list[TicketView],
     out_path: Path,
     now_ct: datetime,
     nashdigs_google: list[NashDigsPackage] | None = None,
@@ -506,27 +506,27 @@ def _build_and_save(
     today = now_ct.date()
     cutoff_cancelled_14d = today - timedelta(days=14)
 
-    active_gfiber = [v for v in views_gfiber if not v.is_cancelled]
+    active_relevant = [v for v in views_relevant if not v.is_cancelled]
     cancelled_14d = [
-        v for v in views_gfiber
+        v for v in views_relevant
         if v.is_cancelled and v.call_date and v.call_date >= cutoff_cancelled_14d
     ]
 
     skipped_no_coords = sum(
-        1 for v in active_gfiber + cancelled_14d + views_ervin_non_gf
+        1 for v in active_relevant + cancelled_14d + views_contractor_other
         if v.latitude is None or v.longitude is None
     )
 
     kml = simplekml.Kml()
     kml.document.name = (
-        f"Ervin Ops Snapshot — {now_ct.strftime('%Y-%m-%d %H:%M')} "
+        f"Meridian Ops Snapshot — {now_ct.strftime('%Y-%m-%d %H:%M')} "
         f"{now_ct.tzname() or 'CT'}"
     )
     kml.document.description = (
         f"Generated {now_ct.isoformat()}. "
-        f"Active GFiber: {len(active_gfiber)}  |  "
-        f"Cancelled GFiber (14d): {len(cancelled_14d)}  |  "
-        f"Ervin non-GFiber: {len(views_ervin_non_gf)}  |  "
+        f"Active relevant: {len(active_relevant)}  |  "
+        f"Cancelled relevant (14d): {len(cancelled_14d)}  |  "
+        f"Meridian non-relevant: {len(views_contractor_other)}  |  "
         f"Skipped (no coords): {skipped_no_coords}\n\n"
         "Pins show TN811-provided coordinates. Actual dig zones are approximate — "
         "toggle 'Dig zone circles' for ±25m visual tolerance."
@@ -537,10 +537,10 @@ def _build_and_save(
     total_placemarks = 0
 
     # ── Axis 1: urgency (visible) ────────────────────────────────────────────
-    urgency_root = kml.newfolder(name="Active GFiber — by urgency")
+    urgency_root = kml.newfolder(name="Active relevant — by urgency")
     urgency_root.visibility = 1
     urgency_buckets: dict[str, list[TicketView]] = {}
-    for v in active_gfiber:
+    for v in active_relevant:
         if v.latitude is None or v.longitude is None:
             continue
         label, _ = urgency_bucket(v)
@@ -555,13 +555,13 @@ def _build_and_save(
             _add_placemark(sub, v, color, styles)
             total_placemarks += 1
         folder_counts[f"urgency/{label}"] = len(bucket)
-    urgency_root.name = f"Active GFiber — by urgency ({sum(len(b) for b in urgency_buckets.values())})"
+    urgency_root.name = f"Active relevant — by urgency ({sum(len(b) for b in urgency_buckets.values())})"
 
     # ── Axis 2: utility status (hidden) ──────────────────────────────────────
-    status_root = kml.newfolder(name="Active GFiber — by utility status")
+    status_root = kml.newfolder(name="Active relevant — by utility status")
     status_root.visibility = 0
     status_buckets: dict[str, list[TicketView]] = {}
-    for v in active_gfiber:
+    for v in active_relevant:
         if v.latitude is None or v.longitude is None:
             continue
         label, _ = utility_status_bucket(v)
@@ -576,15 +576,15 @@ def _build_and_save(
             _add_placemark(sub, v, color, styles)
             total_placemarks += 1
         folder_counts[f"status/{label}"] = len(bucket)
-    status_root.name = f"Active GFiber — by utility status ({sum(len(b) for b in status_buckets.values())})"
+    status_root.name = f"Active relevant — by utility status ({sum(len(b) for b in status_buckets.values())})"
 
     # ── Axis 3: by sub (hidden) ──────────────────────────────────────────────
-    # Merge raw-name aliases via slug so "Blue Ocean" and "Blue Ocean Contractors"
+    # Merge raw-name aliases via slug so "North Ridge" and "North Ridge Contractors"
     # share one folder — matches the CSV exporter's behavior for consistency.
-    sub_root = kml.newfolder(name="Active GFiber — by sub")
+    sub_root = kml.newfolder(name="Active relevant — by sub")
     sub_root.visibility = 0
     views_for_grouping = [
-        v for v in active_gfiber
+        v for v in active_relevant
         if v.latitude is not None and v.longitude is not None
     ]
     by_slug = _group_by_slug(views_for_grouping)
@@ -604,7 +604,7 @@ def _build_and_save(
             total_placemarks += 1
             total_sub_placed += 1
         folder_counts[f"sub/{slug}"] = len(bucket)
-    sub_root.name = f"Active GFiber — by sub ({total_sub_placed})"
+    sub_root.name = f"Active relevant — by sub ({total_sub_placed})"
 
     # ── Dig zone circles (±25 m tolerance, hidden by default) ───────────────
     # Only point-rendered tickets get a circle; polyline tickets already convey
@@ -613,7 +613,7 @@ def _build_and_save(
     circles_root = kml.newfolder(name="Dig zone circles (±25m approximate)")
     circles_root.visibility = 0
     circle_buckets: dict[str, list[TicketView]] = {}
-    for v in active_gfiber:
+    for v in active_relevant:
         if not _is_point_only(v):
             continue
         label, _ = urgency_bucket(v)
@@ -634,9 +634,9 @@ def _build_and_save(
         f"Dig zone circles (±25m approximate) ({circle_total})"
     )
 
-    # ── Cancelled GFiber (last 14 days) ──────────────────────────────────────
+    # ── Cancelled relevant (last 14 days) ──────────────────────────────────────
     cancelled_folder = kml.newfolder(
-        name=f"Cancelled GFiber — last 14 days ({len(cancelled_14d)})"
+        name=f"Cancelled relevant — last 14 days ({len(cancelled_14d)})"
     )
     cancelled_folder.visibility = 0
     for v in cancelled_14d:
@@ -646,18 +646,18 @@ def _build_and_save(
         total_placemarks += 1
     folder_counts["cancelled_14d"] = len(cancelled_14d)
 
-    # ── Ervin non-GFiber (only if any) ───────────────────────────────────────
-    if views_ervin_non_gf:
-        ervin_folder = kml.newfolder(
-            name=f"Ervin non-GFiber ({len(views_ervin_non_gf)})"
+    # ── Meridian non-relevant (only if any) ───────────────────────────────────────
+    if views_contractor_other:
+        contractor_other_folder = kml.newfolder(
+            name=f"Meridian non-relevant ({len(views_contractor_other)})"
         )
-        ervin_folder.visibility = 0
-        for v in views_ervin_non_gf:
+        contractor_other_folder.visibility = 0
+        for v in views_contractor_other:
             if v.latitude is None or v.longitude is None:
                 continue
-            _add_placemark(ervin_folder, v, simplekml.Color.purple, styles)
+            _add_placemark(contractor_other_folder, v, simplekml.Color.purple, styles)
             total_placemarks += 1
-        folder_counts["ervin_non_gfiber"] = len(views_ervin_non_gf)
+        folder_counts["contractor_other"] = len(views_contractor_other)
 
     # ── NashDigs Google packages ─────────────────────────────────────────────
     nashdigs_counts = {"active": 0, "committed": 0, "recent": 0, "conflict": 0}
@@ -683,9 +683,9 @@ def _build_and_save(
         total_placemarks=total_placemarks,
         folder_counts=folder_counts,
         skipped_no_coords=skipped_no_coords,
-        active_gfiber=len(active_gfiber),
-        cancelled_gfiber_14d=len(cancelled_14d),
-        ervin_non_gfiber=len(views_ervin_non_gf),
+        active_relevant=len(active_relevant),
+        cancelled_relevant_14d=len(cancelled_14d),
+        contractor_other=len(views_contractor_other),
         dig_zone_circles=circle_total,
         nashdigs_active=nashdigs_counts.get("active", 0),
         nashdigs_committed=nashdigs_counts.get("committed", 0),
@@ -998,7 +998,7 @@ def _render_package_popup(
     if ticket_counts:
         tc = ticket_counts
         ticket_block = (
-            f"<h4>Ervin GFiber tickets tagged to this package</h4>"
+            f"<h4>Meridian relevant tickets tagged to this package</h4>"
             f"<table><tr><td><b>Total:</b></td><td>{tc.get('total', 0)}</td></tr>"
             f"<tr><td><b>Active:</b></td><td>{tc.get('active', 0)}</td></tr>"
             f"<tr><td><b>High confidence:</b></td><td>{tc.get('high', 0)}</td></tr>"

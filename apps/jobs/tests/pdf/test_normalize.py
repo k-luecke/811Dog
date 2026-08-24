@@ -35,7 +35,7 @@ def _make_detail(**kwargs) -> DetailRecord:
             "excavator_name": "Acme Fiber LLC",
             "work_type": "Telecom - Underground Fiber",
             "location_text": "123 Main St Nashville TN",
-            "remarks": "Google Fiber drop bury",
+            "remarks": "Northstar Fiber drop bury",
         },
     )
     defaults.update(kwargs)

@@ -70,7 +70,7 @@ class TestParseExportCsv:
     def test_work_done_for_extracted(self, search_results_csv: str):
         rows = parse_export_csv(search_results_csv, "Davidson County")
         row_map = {r.ticket_number: r for r in rows}
-        assert "GOOGLE FIBER" == row_map["2609013001"].work_done_for_raw
+        assert "NORTHSTAR FIBER" == row_map["2609013001"].work_done_for_raw
         assert "GOOGLE" == row_map["2609013002"].work_done_for_raw
         assert row_map["2609013004"].work_done_for_raw is None
 

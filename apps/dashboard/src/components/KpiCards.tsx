@@ -50,13 +50,13 @@ export function KpiCards({ summary }: Props) {
         accent="gray"
       />
       <KpiCard
-        label="GFiber Related"
-        value={summary.gfiber_related}
+        label="Relevant"
+        value={summary.relevant}
         accent="blue"
       />
       <KpiCard
-        label="Active GFiber"
-        value={summary.active_gfiber}
+        label="Active Relevant"
+        value={summary.active_relevant}
         accent="green"
         sub="not expired or cancelled"
       />

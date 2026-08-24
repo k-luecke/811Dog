@@ -3,12 +3,12 @@ exporters/csv_export.py — Supervisor- and subcontractor-facing CSV bundle.
 
 Produces nine master CSVs in the exports directory (static filenames, overwritten
 each run) plus a MANIFEST.txt. When `sub_slices=True`, also emits a
-`by_sub/<slug>/` folder per excavator with at least one active GFiber ticket,
+`by_sub/<slug>/` folder per excavator with at least one active relevant ticket,
 each folder containing up to three files (active / expiring_7d / late_utilities).
 
 Design:
   load_ticket_views(session, now_ct)
-      → list[TicketView]  — one per GFiber-related ticket, fields denormalized
+      → list[TicketView]  — one per relevant ticket, fields denormalized
                             and derivations (days_until_expire, utility_summary,
                             status) precomputed against now_ct.
   write_exports(views, out_dir, sub_slices, now_ct)
@@ -108,15 +108,15 @@ BY_SUB_COLUMNS: tuple[str, ...] = (
 )
 
 MASTER_FILES: tuple[str, ...] = (
-    "gfiber_active.csv",
-    "gfiber_expiring_4d.csv",
-    "gfiber_expiring_7d.csv",
-    "gfiber_late_utilities.csv",
-    "gfiber_blocked.csv",
-    "gfiber_new_24h.csv",
-    "gfiber_by_sub.csv",
-    "gfiber_utility_detail.csv",
-    "gfiber_cancelled_7d.csv",
+    "relevant_active.csv",
+    "relevant_expiring_4d.csv",
+    "relevant_expiring_7d.csv",
+    "relevant_late_utilities.csv",
+    "relevant_blocked.csv",
+    "relevant_new_24h.csv",
+    "relevant_by_contractor.csv",
+    "relevant_utility_detail.csv",
+    "relevant_cancelled_7d.csv",
     "unassigned_tickets_for_review.csv",
     "packages_view.csv",
 )
@@ -222,7 +222,7 @@ class FileSummary:
 class ExportManifest:
     generated_at: datetime
     total_tickets_in_db: int
-    total_gfiber_in_db: int
+    total_relevant_in_db: int
     call_date_min: date | None
     call_date_max: date | None
     master_files: list[FileSummary]
@@ -346,9 +346,9 @@ def mirror_to_desktop(src_dir: Path, dest_dir: Path) -> bool:
 
 
 def load_ticket_views(session: Session, now_ct: datetime) -> list[TicketView]:
-    """Load all GFiber-related tickets from the DB and compute per-ticket derivations."""
+    """Load all relevant tickets from the DB and compute per-ticket derivations."""
     tickets: list[ORMTicket] = (
-        session.query(ORMTicket).filter(ORMTicket.is_gfiber_related == True).all()  # noqa: E712
+        session.query(ORMTicket).filter(ORMTicket.is_relevant == True).all()  # noqa: E712
     )
     return [ticket_view_from_orm(t, now_ct) for t in tickets]
 
@@ -457,13 +457,13 @@ def write_exports(
         )
 
     master_pairs: list[tuple[str, list[TicketView]]] = [
-        ("gfiber_active.csv", _sort_master(active)),
-        ("gfiber_expiring_4d.csv", _sort_master(expiring_4d)),
-        ("gfiber_expiring_7d.csv", _sort_master(expiring_7d)),
-        ("gfiber_late_utilities.csv", _sort_master(late_utilities)),
-        ("gfiber_blocked.csv", _sort_master(blocked)),
-        ("gfiber_new_24h.csv", _sort_master(new_24h)),
-        ("gfiber_cancelled_7d.csv", _sort_master(cancelled_7d)),
+        ("relevant_active.csv", _sort_master(active)),
+        ("relevant_expiring_4d.csv", _sort_master(expiring_4d)),
+        ("relevant_expiring_7d.csv", _sort_master(expiring_7d)),
+        ("relevant_late_utilities.csv", _sort_master(late_utilities)),
+        ("relevant_blocked.csv", _sort_master(blocked)),
+        ("relevant_new_24h.csv", _sort_master(new_24h)),
+        ("relevant_cancelled_7d.csv", _sort_master(cancelled_7d)),
     ]
 
     summaries: list[FileSummary] = []
@@ -474,12 +474,12 @@ def write_exports(
 
     # By-sub rollup
     rollups = compute_sub_rollups(views, today)
-    by_sub_path = out_dir / "gfiber_by_sub.csv"
+    by_sub_path = out_dir / "relevant_by_contractor.csv"
     _write_by_sub_csv(by_sub_path, rollups)
     summaries.append(_summarize_file(by_sub_path, len(rollups)))
 
-    # Utility detail — one row per utility per non-cancelled GFiber ticket
-    detail_path = out_dir / "gfiber_utility_detail.csv"
+    # Utility detail — one row per utility per non-cancelled relevant ticket
+    detail_path = out_dir / "relevant_utility_detail.csv"
     detail_row_count = _write_utility_detail_csv(detail_path, active, today)
     summaries.append(_summarize_file(detail_path, detail_row_count))
 
@@ -506,7 +506,7 @@ def write_exports(
     manifest = ExportManifest(
         generated_at=now_ct,
         total_tickets_in_db=(db_stats or {}).get("total_tickets", 0),
-        total_gfiber_in_db=(db_stats or {}).get("total_gfiber", len(views)),
+        total_relevant_in_db=(db_stats or {}).get("total_relevant", len(views)),
         call_date_min=(db_stats or {}).get("call_date_min"),
         call_date_max=(db_stats or {}).get("call_date_max"),
         master_files=summaries,
@@ -872,7 +872,7 @@ def _write_utility_detail_csv(
     active_views: Sequence[TicketView],
     today: date,
 ) -> int:
-    """One row per utility per non-cancelled GFiber ticket. Returns row count."""
+    """One row per utility per non-cancelled relevant ticket. Returns row count."""
     rows: list[tuple[TicketView, dict]] = []
     for v in active_views:
         for u in v.utility_statuses or []:
@@ -1065,7 +1065,7 @@ def _write_manifest(path: Path, manifest: ExportManifest) -> None:
     )
     lines.append(
         f"DB snapshot: {manifest.total_tickets_in_db:,} total tickets, "
-        f"{manifest.total_gfiber_in_db:,} GFiber, "
+        f"{manifest.total_relevant_in_db:,} relevant, "
         f"call_date range {call_range}"
     )
     lines.append("")
@@ -1096,9 +1096,9 @@ def _fmt_size(n: int) -> str:
 def _db_stats(session: Session) -> dict:
     """Cheap aggregate stats used to populate the manifest header."""
     total = session.query(ORMTicket).count()
-    gfiber = (
+    relevant = (
         session.query(ORMTicket)
-        .filter(ORMTicket.is_gfiber_related == True)  # noqa: E712
+        .filter(ORMTicket.is_relevant == True)  # noqa: E712
         .count()
     )
     min_call = (
@@ -1117,7 +1117,7 @@ def _db_stats(session: Session) -> dict:
     )
     return {
         "total_tickets": total,
-        "total_gfiber": gfiber,
+        "total_relevant": relevant,
         "call_date_min": _parse_iso_date(min_call),
         "call_date_max": _parse_iso_date(max_call),
     }

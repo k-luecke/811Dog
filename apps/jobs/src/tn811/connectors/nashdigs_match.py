@@ -1,7 +1,7 @@
 """
 connectors/nashdigs_match.py — spatial join tickets → NashDigs packages.
 
-Every GFiber-related ticket with lat/lon is tested against the cached
+Every relevant ticket with lat/lon is tested against the cached
 Google-owned NashDigs polylines. The nearest polyline (measured in meters,
 after reprojecting to UTM Zone 16N) determines the ticket's package_id and
 a confidence tier:
@@ -71,12 +71,12 @@ def classify_distance(distance_m: float) -> str:
     return CONFIDENCE_NONE
 
 
-def match_all_gfiber_tickets(
+def match_all_relevant_tickets(
     session: Session,
     *,
     dry_run: bool = False,
 ) -> MatchStats:
-    """Reproject cached packages, walk every GFiber ticket, assign nearest.
+    """Reproject cached packages, walk every relevant ticket, assign nearest.
 
     Writes `nashdigs_project_name`, `nashdigs_match_confidence`, and
     `nashdigs_distance_m` to each ORMTicket row unless dry_run=True.
@@ -92,7 +92,7 @@ def match_all_gfiber_tickets(
         # Walk tickets only to get a skip count
         tickets = (
             session.query(ORMTicket)
-            .filter(ORMTicket.is_gfiber_related == True)  # noqa: E712
+            .filter(ORMTicket.is_relevant == True)  # noqa: E712
             .all()
         )
         stats.total = len(tickets)
@@ -123,7 +123,7 @@ def match_all_gfiber_tickets(
 
     tickets = (
         session.query(ORMTicket)
-        .filter(ORMTicket.is_gfiber_related == True)  # noqa: E712
+        .filter(ORMTicket.is_relevant == True)  # noqa: E712
         .all()
     )
 

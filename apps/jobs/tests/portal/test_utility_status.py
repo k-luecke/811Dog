@@ -208,7 +208,7 @@ class TestParseDetailHtmlLiveWorkInfo:
 
     def test_done_for_extracted(self, detail_html_live_all_clear):
         record = self._record(detail_html_live_all_clear)
-        assert record.fields.get("done_for") == "GOOGLE FIBER 6459663"
+        assert record.fields.get("done_for") == "NORTHSTAR FIBER 6459663"
 
     def test_work_type_extracted(self, detail_html_live_all_clear):
         record = self._record(detail_html_live_all_clear)

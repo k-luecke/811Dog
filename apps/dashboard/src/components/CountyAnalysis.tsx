@@ -15,7 +15,7 @@ export function CountyAnalysis({ counties }: Props) {
     <section className="rounded-xl border border-gray-200 bg-white shadow-sm">
       <div className="border-b border-gray-100 px-5 py-3">
         <h2 className="text-base font-semibold text-gray-800">County Analysis</h2>
-        <p className="text-xs text-gray-400">GFiber-related tickets by county</p>
+        <p className="text-xs text-gray-400">Relevant tickets by county</p>
       </div>
       <div className="divide-y divide-gray-100">
         {sorted.length === 0 && (

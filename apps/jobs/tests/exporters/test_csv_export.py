@@ -83,7 +83,7 @@ def _mk(
         address="100 MAIN ST",
         intersection="1ST AVE",
         place="",
-        done_for="GOOGLE FIBER",
+        done_for="NORTHSTAR FIBER",
         is_ready_to_dig=is_ready_to_dig,
         has_late_utility=has_late_utility,
         late_utility_codes=late_codes or [],
@@ -107,7 +107,7 @@ def sample_views() -> list[TicketView]:
     return [
         _mk(  # T1 — active, expiring in 3 days, 2 clear utilities
             ticket_number="T1",
-            excavator="BLUE OCEAN CONTRACTORS",
+            excavator="NORTH RIDGE CONTRACTORS",
             call_date=date(2026, 4, 10),
             expire_date=date(2026, 4, 27),
             utility_statuses=[
@@ -120,11 +120,11 @@ def sample_views() -> list[TicketView]:
         ),
         _mk(  # T2 — active, expiring in 6 days, 1 late GFI
             ticket_number="T2",
-            excavator="CUI CABLE",
+            excavator="DELTA CABLE",
             call_date=date(2026, 4, 15),
             expire_date=date(2026, 4, 30),
             utility_statuses=[
-                {"code": "GFI", "name": "Google Fiber", "facility": "Fiber",
+                {"code": "GFI", "name": "Northstar Fiber", "facility": "Fiber",
                  "status": "pending", "is_late": True},
             ],
             has_late_utility=True,
@@ -132,7 +132,7 @@ def sample_views() -> list[TicketView]:
         ),
         _mk(  # T3 — active, expiring in 20 days, 1 blocked (delayed)
             ticket_number="T3",
-            excavator="BLUE OCEAN CONTRACTORS",
+            excavator="NORTH RIDGE CONTRACTORS",
             call_date=date(2026, 4, 4),
             expire_date=date(2026, 5, 14),
             utility_statuses=[
@@ -144,11 +144,11 @@ def sample_views() -> list[TicketView]:
         ),
         _mk(  # T4 — active, called today, 2 pending non-late
             ticket_number="T4",
-            excavator="DTOB",
+            excavator="DTX",
             call_date=TODAY,
             expire_date=date(2026, 5, 8),
             utility_statuses=[
-                {"code": "GFI", "name": "Google Fiber", "facility": "Fiber",
+                {"code": "GFI", "name": "Northstar Fiber", "facility": "Fiber",
                  "status": "pending", "is_late": False},
                 {"code": "NES", "name": "Nashville Electric", "facility": "Electric",
                  "status": "pending", "is_late": False},
@@ -157,7 +157,7 @@ def sample_views() -> list[TicketView]:
         ),
         _mk(  # T5 — cancelled 4 days ago
             ticket_number="T5",
-            excavator="CUI CABLE",
+            excavator="DELTA CABLE",
             call_date=date(2026, 4, 20),
             expire_date=date(2026, 5, 5),
             is_cancelled=True,
@@ -172,7 +172,7 @@ def sample_views() -> list[TicketView]:
         ),
         _mk(  # T7 — active, expiring in 2 days, 1 late + 1 in-conflict
             ticket_number="T7",
-            excavator="BLUE OCEAN CONTRACTORS",
+            excavator="NORTH RIDGE CONTRACTORS",
             call_date=date(2026, 4, 8),
             expire_date=date(2026, 4, 26),
             utility_statuses=[
@@ -188,7 +188,7 @@ def sample_views() -> list[TicketView]:
         ),
         _mk(  # T8 — active, already expired 4 days ago
             ticket_number="T8",
-            excavator="DTOB",
+            excavator="DTX",
             call_date=date(2026, 3, 20),
             expire_date=date(2026, 4, 20),
             utility_statuses=[
@@ -213,7 +213,7 @@ def _read_csv(path: Path) -> tuple[list[str], list[dict]]:
 
 def test_active_csv(tmp_path, sample_views):
     write_exports(sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    header, rows = _read_csv(tmp_path / "gfiber_active.csv")
+    header, rows = _read_csv(tmp_path / "relevant_active.csv")
 
     assert header == list(MASTER_COLUMNS)
     assert len(rows) == 7  # all except T5 (cancelled)
@@ -234,7 +234,7 @@ def test_active_csv(tmp_path, sample_views):
 
 def test_expiring_4d_csv(tmp_path, sample_views):
     write_exports(sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    _, rows = _read_csv(tmp_path / "gfiber_expiring_4d.csv")
+    _, rows = _read_csv(tmp_path / "relevant_expiring_4d.csv")
     # T1 (+3d), T7 (+2d), T8 (-4d — already expired qualifies since <=4)
     assert {r["ticket_number"] for r in rows} == {"T1", "T7", "T8"}
     # Verify days_until_expire rendered as signed int
@@ -245,13 +245,13 @@ def test_expiring_4d_csv(tmp_path, sample_views):
 
 def test_expiring_7d_csv(tmp_path, sample_views):
     write_exports(sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    _, rows = _read_csv(tmp_path / "gfiber_expiring_7d.csv")
+    _, rows = _read_csv(tmp_path / "relevant_expiring_7d.csv")
     assert {r["ticket_number"] for r in rows} == {"T1", "T2", "T7", "T8"}
 
 
 def test_late_utilities_csv(tmp_path, sample_views):
     write_exports(sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    _, rows = _read_csv(tmp_path / "gfiber_late_utilities.csv")
+    _, rows = _read_csv(tmp_path / "relevant_late_utilities.csv")
     assert {r["ticket_number"] for r in rows} == {"T2", "T7"}
     t2 = next(r for r in rows if r["ticket_number"] == "T2")
     assert t2["has_late_utility"] == "TRUE"
@@ -261,7 +261,7 @@ def test_late_utilities_csv(tmp_path, sample_views):
 
 def test_blocked_csv(tmp_path, sample_views):
     write_exports(sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    _, rows = _read_csv(tmp_path / "gfiber_blocked.csv")
+    _, rows = _read_csv(tmp_path / "relevant_blocked.csv")
     assert {r["ticket_number"] for r in rows} == {"T3", "T7"}
     t3 = next(r for r in rows if r["ticket_number"] == "T3")
     assert t3["blocking_utility_codes"] == "MWS"
@@ -273,7 +273,7 @@ def test_blocked_csv(tmp_path, sample_views):
 
 def test_new_24h_csv(tmp_path, sample_views):
     write_exports(sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    _, rows = _read_csv(tmp_path / "gfiber_new_24h.csv")
+    _, rows = _read_csv(tmp_path / "relevant_new_24h.csv")
     # Only T4 has call_date == today
     assert [r["ticket_number"] for r in rows] == ["T4"]
     assert rows[0]["utility_summary"] == "2 pending"
@@ -281,7 +281,7 @@ def test_new_24h_csv(tmp_path, sample_views):
 
 def test_cancelled_7d_csv(tmp_path, sample_views):
     write_exports(sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    _, rows = _read_csv(tmp_path / "gfiber_cancelled_7d.csv")
+    _, rows = _read_csv(tmp_path / "relevant_cancelled_7d.csv")
     assert [r["ticket_number"] for r in rows] == ["T5"]
     assert rows[0]["is_cancelled"] == "TRUE"
     assert rows[0]["status"] == "cancelled"
@@ -289,14 +289,14 @@ def test_cancelled_7d_csv(tmp_path, sample_views):
 
 def test_by_sub_csv(tmp_path, sample_views):
     write_exports(sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    header, rows = _read_csv(tmp_path / "gfiber_by_sub.csv")
+    header, rows = _read_csv(tmp_path / "relevant_by_contractor.csv")
 
     assert header == list(BY_SUB_COLUMNS)
-    # T6 has empty excavator → excluded. Three excavators: Blue Ocean, CUI, DTOB.
+    # T6 has empty excavator → excluded. Three excavators: North Ridge, DELTA, DTX.
     by_name = {r["excavator_name"]: r for r in rows}
-    assert set(by_name) == {"BLUE OCEAN CONTRACTORS", "CUI CABLE", "DTOB"}
+    assert set(by_name) == {"NORTH RIDGE CONTRACTORS", "DELTA CABLE", "DTX"}
 
-    blue = by_name["BLUE OCEAN CONTRACTORS"]
+    blue = by_name["NORTH RIDGE CONTRACTORS"]
     assert blue["active_count"] == "3"  # T1, T3, T7
     assert blue["expiring_4d_count"] == "2"  # T1, T7
     assert blue["expiring_7d_count"] == "2"  # T1, T7 (T3 is +20d)
@@ -304,18 +304,18 @@ def test_by_sub_csv(tmp_path, sample_views):
     assert blue["blocked_count"] == "2"  # T3 and T7 both have blocking codes
     assert blue["primary_county"] == "Davidson County"
 
-    cui = by_name["CUI CABLE"]
+    cui = by_name["DELTA CABLE"]
     assert cui["active_count"] == "1"  # T2
     assert cui["cancelled_last_7d_count"] == "1"  # T5
     assert cui["late_utilities_count"] == "1"  # T2
 
     # Sort order: by active_count desc, then name asc
-    assert [r["excavator_name"] for r in rows][0] == "BLUE OCEAN CONTRACTORS"
+    assert [r["excavator_name"] for r in rows][0] == "NORTH RIDGE CONTRACTORS"
 
 
 def test_utility_detail_csv(tmp_path, sample_views):
     write_exports(sample_views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    header, rows = _read_csv(tmp_path / "gfiber_utility_detail.csv")
+    header, rows = _read_csv(tmp_path / "relevant_utility_detail.csv")
 
     assert header == list(UTILITY_DETAIL_COLUMNS)
     # One row per utility on each non-cancelled ticket:
@@ -342,7 +342,7 @@ def test_latitude_longitude_rendered_when_populated(tmp_path):
     views = [
         _mk(
             ticket_number="GEO001",
-            excavator="BLUE OCEAN CONTRACTORS",
+            excavator="NORTH RIDGE CONTRACTORS",
             call_date=date(2026, 4, 20),
             expire_date=date(2026, 5, 1),
             latitude=35.891968,
@@ -350,13 +350,13 @@ def test_latitude_longitude_rendered_when_populated(tmp_path):
         ),
         _mk(  # Second row with no coords renders empty strings
             ticket_number="GEO002",
-            excavator="BLUE OCEAN CONTRACTORS",
+            excavator="NORTH RIDGE CONTRACTORS",
             call_date=date(2026, 4, 20),
             expire_date=date(2026, 5, 1),
         ),
     ]
     write_exports(views, tmp_path, sub_slices=False, now_ct=NOW_CT)
-    _, rows = _read_csv(tmp_path / "gfiber_active.csv")
+    _, rows = _read_csv(tmp_path / "relevant_active.csv")
     geo = next(r for r in rows if r["ticket_number"] == "GEO001")
     assert geo["latitude"] == "35.891968"
     assert geo["longitude"] == "-86.417549"
@@ -381,10 +381,10 @@ def test_sub_slices_created(tmp_path, sample_views):
 
     # Three subs with active rows; T6 (empty name) excluded
     slugs = {p.name for p in by_sub.iterdir() if p.is_dir()}
-    assert slugs == {"blue-ocean-contractors", "cui-cable", "dtob"}
+    assert slugs == {"north-ridge-contractors", "delta-cable", "dtx"}
 
-    # Blue Ocean: 3 active, 2 expiring_7d, 1 late_utilities
-    blue = by_sub / "blue-ocean-contractors"
+    # North Ridge: 3 active, 2 expiring_7d, 1 late_utilities
+    blue = by_sub / "north-ridge-contractors"
     _, active = _read_csv(blue / "active.csv")
     assert {r["ticket_number"] for r in active} == {"T1", "T3", "T7"}
     _, expiring = _read_csv(blue / "expiring_7d.csv")
@@ -392,14 +392,14 @@ def test_sub_slices_created(tmp_path, sample_views):
     _, late = _read_csv(blue / "late_utilities.csv")
     assert {r["ticket_number"] for r in late} == {"T7"}
 
-    # DTOB: 2 active (T4, T8). T8 is already-expired (days=-4) so it qualifies
+    # DTX: 2 active (T4, T8). T8 is already-expired (days=-4) so it qualifies
     # as expiring_7d. No late utilities, so that file is skipped.
-    dtob = by_sub / "dtob"
-    _, dtob_active = _read_csv(dtob / "active.csv")
-    assert {r["ticket_number"] for r in dtob_active} == {"T4", "T8"}
-    _, dtob_expiring = _read_csv(dtob / "expiring_7d.csv")
-    assert {r["ticket_number"] for r in dtob_expiring} == {"T8"}
-    assert not (dtob / "late_utilities.csv").exists()
+    dtx = by_sub / "dtx"
+    _, dtx_active = _read_csv(dtx / "active.csv")
+    assert {r["ticket_number"] for r in dtx_active} == {"T4", "T8"}
+    _, dtx_expiring = _read_csv(dtx / "expiring_7d.csv")
+    assert {r["ticket_number"] for r in dtx_expiring} == {"T8"}
+    assert not (dtx / "late_utilities.csv").exists()
 
     assert manifest.sub_slice_count == 3
 
@@ -409,19 +409,19 @@ def test_name_variants_collapse_to_single_slug(tmp_path):
     views = [
         _mk(
             ticket_number="A1",
-            excavator="Civcom Construction",
+            excavator="Lakeside Construction",
             call_date=date(2026, 4, 10),
             expire_date=date(2026, 4, 30),
         ),
         _mk(
             ticket_number="A2",
-            excavator="CIVCOM CONSTRUCTION",  # casing-only variant → same slug
+            excavator="LAKESIDE CONSTRUCTION",  # casing-only variant → same slug
             call_date=date(2026, 4, 11),
             expire_date=date(2026, 5, 1),
         ),
         _mk(
             ticket_number="A3",
-            excavator="  Civcom   Construction  ",  # whitespace variant → same slug
+            excavator="  Lakeside   Construction  ",  # whitespace variant → same slug
             call_date=date(2026, 4, 12),
             expire_date=date(2026, 5, 2),
         ),
@@ -430,14 +430,14 @@ def test_name_variants_collapse_to_single_slug(tmp_path):
 
     # Only one by_sub folder should exist, containing all three tickets
     slug_dirs = [p.name for p in (tmp_path / "by_sub").iterdir() if p.is_dir()]
-    assert slug_dirs == ["civcom-construction"]
+    assert slug_dirs == ["lakeside-construction"]
     assert manifest.sub_slice_count == 1
 
-    _, active = _read_csv(tmp_path / "by_sub" / "civcom-construction" / "active.csv")
+    _, active = _read_csv(tmp_path / "by_sub" / "lakeside-construction" / "active.csv")
     assert {r["ticket_number"] for r in active} == {"A1", "A2", "A3"}
 
     # by_sub CSV has a single row with active_count=3 (not three rows with count=1)
-    _, sub_rows = _read_csv(tmp_path / "gfiber_by_sub.csv")
+    _, sub_rows = _read_csv(tmp_path / "relevant_by_contractor.csv")
     assert len(sub_rows) == 1
     assert sub_rows[0]["active_count"] == "3"
 
@@ -460,7 +460,7 @@ def test_sub_slices_subtree_rebuilt_each_run(tmp_path, sample_views):
 
 
 def test_stale_master_files_removed(tmp_path, sample_views):
-    stale = tmp_path / "gfiber_active.csv"
+    stale = tmp_path / "relevant_active.csv"
     stale.write_text("ticket_number\nOLD\n")
     assert stale.read_text().startswith("ticket_number\nOLD")
 
@@ -475,7 +475,7 @@ def test_manifest_written(tmp_path, sample_views):
         sample_views, tmp_path, sub_slices=True, now_ct=NOW_CT,
         db_stats={
             "total_tickets": 100,
-            "total_gfiber": 8,
+            "total_relevant": 8,
             "call_date_min": date(2026, 3, 20),
             "call_date_max": date(2026, 4, 24),
         },
@@ -483,7 +483,7 @@ def test_manifest_written(tmp_path, sample_views):
     manifest_text = (tmp_path / "MANIFEST.txt").read_text()
     assert "Generated at:" in manifest_text
     assert "100 total tickets" in manifest_text
-    assert "8 GFiber" in manifest_text
+    assert "8 relevant" in manifest_text
     for name in MASTER_FILES:
         assert name in manifest_text
     assert "Per-subcontractor slices (3 subs)" in manifest_text
@@ -494,10 +494,10 @@ def test_manifest_written(tmp_path, sample_views):
 
 class TestSlugify:
     def test_basic(self):
-        assert slugify("Blue Ocean Contractors") == "blue-ocean-contractors"
+        assert slugify("North Ridge Contractors") == "north-ridge-contractors"
 
     def test_special_chars(self):
-        assert slugify("CUI Cable & Services, LLC") == "cui-cable-services-llc"
+        assert slugify("DELTA Cable & Services, LLC") == "delta-cable-services-llc"
 
     def test_consecutive_spaces_and_punct(self):
         assert slugify("Foo   ---   Bar!!!") == "foo-bar"
@@ -641,8 +641,8 @@ def test_mirror_copies_full_bundle(tmp_path, sample_views):
     assert (mirror / "by_sub").is_dir()
 
     # Spot-check that the mirrored CSV matches the primary row-for-row
-    _, primary_rows = _read_csv(primary / "gfiber_active.csv")
-    _, mirror_rows = _read_csv(mirror / "gfiber_active.csv")
+    _, primary_rows = _read_csv(primary / "relevant_active.csv")
+    _, mirror_rows = _read_csv(mirror / "relevant_active.csv")
     assert primary_rows == mirror_rows
 
 
@@ -663,13 +663,13 @@ def test_export_skips_mirror_when_path_is_none(in_memory_db):
                 state="TN",
                 call_date="2026-04-20",
                 expiration_date="2026-04-27",
-                excavator_name="BLUE OCEAN",
+                excavator_name="NORTH RIDGE",
                 caller_name="T",
                 caller_phone="",
                 work_type="FIBER",
                 location_text="X",
                 intersection_text="Y",
-                done_for="GOOGLE FIBER",
+                done_for="NORTHSTAR FIBER",
                 utility_statuses=[],
                 is_ready_to_dig=False,
                 has_late_utility=False,
@@ -679,7 +679,7 @@ def test_export_skips_mirror_when_path_is_none(in_memory_db):
                 status="active",
                 is_cancelled=False,
                 relevance_score=1.0,
-                is_gfiber_related=True,
+                is_relevant=True,
                 created_at=now,
                 updated_at=now,
                 latest_content_hash="h",
@@ -693,7 +693,7 @@ def test_export_skips_mirror_when_path_is_none(in_memory_db):
         export(session, primary, sub_slices=False, desktop_mirror_path=None)
 
     # Primary ran; mirror was never even looked at
-    assert (primary / "gfiber_active.csv").exists()
+    assert (primary / "relevant_active.csv").exists()
     assert not mirror_candidate.exists()
 
 
@@ -714,7 +714,7 @@ def test_mirror_warns_and_returns_false_on_unwritable_path(tmp_path, sample_view
     assert result is False
     assert any("Desktop mirror" in rec.message for rec in caplog.records)
     # Primary is untouched
-    assert (primary / "gfiber_active.csv").exists()
+    assert (primary / "relevant_active.csv").exists()
 
 
 def test_mirror_replaces_prior_bundle_not_unrelated_files(tmp_path, sample_views):
@@ -729,7 +729,7 @@ def test_mirror_replaces_prior_bundle_not_unrelated_files(tmp_path, sample_views
 
     write_exports(sample_views, primary, sub_slices=True, now_ct=NOW_CT)
     # Seed a stale prior bundle in the mirror
-    (mirror / "gfiber_active.csv").write_text("stale,header\nstale,row\n")
+    (mirror / "relevant_active.csv").write_text("stale,header\nstale,row\n")
     (mirror / "by_sub").mkdir()
     (mirror / "by_sub" / "ghost").mkdir()
     (mirror / "by_sub" / "ghost" / "active.csv").write_text("x")
@@ -740,7 +740,7 @@ def test_mirror_replaces_prior_bundle_not_unrelated_files(tmp_path, sample_views
     assert (mirror / "notes.txt").exists()
     assert (mirror / "ignore_me.xlsx").exists()
     # Stale bundle wiped and replaced
-    _, rows = _read_csv(mirror / "gfiber_active.csv")
+    _, rows = _read_csv(mirror / "relevant_active.csv")
     assert "stale" not in {r["ticket_number"] for r in rows}
     assert not (mirror / "by_sub" / "ghost").exists()
 
@@ -779,7 +779,7 @@ def test_packages_view_sorted_by_days_to_est_end(tmp_path):
         _fake_pkg("BNA333a", est_end=None, project_id=3),  # no date → bottom
     ]
     views = [
-        _mk(ticket_number="T1", excavator="BLUE OCEAN",
+        _mk(ticket_number="T1", excavator="NORTH RIDGE",
             call_date=date(2026, 4, 15), expire_date=date(2026, 4, 30),
             nashdigs_project_name="BNA111a",
             nashdigs_match_confidence="high"),
@@ -916,13 +916,13 @@ def test_end_to_end_via_orm(in_memory_db):
                 state="TN",
                 call_date="2026-04-20",
                 expiration_date="2026-04-27",
-                excavator_name="BLUE OCEAN CONTRACTORS",
+                excavator_name="NORTH RIDGE CONTRACTORS",
                 caller_name="Test",
                 caller_phone="(615) 555-0100",
                 work_type="FIBER",
                 location_text="1 MAIN ST",
                 intersection_text="1ST AVE",
-                done_for="GOOGLE FIBER",
+                done_for="NORTHSTAR FIBER",
                 utility_statuses=[
                     {"code": "NES", "status": "clear", "is_late": False},
                 ],
@@ -934,7 +934,7 @@ def test_end_to_end_via_orm(in_memory_db):
                 status="active",
                 is_cancelled=False,
                 relevance_score=1.0,
-                is_gfiber_related=True,
+                is_relevant=True,
                 created_at=now,
                 updated_at=now,
                 latest_content_hash="deadbeef",
@@ -945,6 +945,6 @@ def test_end_to_end_via_orm(in_memory_db):
         manifest = export(session, Path(in_memory_db.paths.exports_dir), sub_slices=True)
 
     # Our one active ticket ended up in all the right places
-    _, active = _read_csv(Path(in_memory_db.paths.exports_dir) / "gfiber_active.csv")
+    _, active = _read_csv(Path(in_memory_db.paths.exports_dir) / "relevant_active.csv")
     assert [r["ticket_number"] for r in active] == ["E2E001"]
-    assert manifest.total_gfiber_in_db == 1
+    assert manifest.total_relevant_in_db == 1

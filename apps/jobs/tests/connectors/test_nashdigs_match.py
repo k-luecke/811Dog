@@ -20,7 +20,7 @@ from tn811.connectors.nashdigs_match import (
     TIER_LOW_MAX_M,
     TIER_MEDIUM_MAX_M,
     classify_distance,
-    match_all_gfiber_tickets,
+    match_all_relevant_tickets,
 )
 from tn811.models import ORMNashDigsProject, ORMTicket
 
@@ -64,7 +64,7 @@ def _seed_ticket(
     ticket_number: str,
     latitude: float | None,
     longitude: float | None,
-    is_gfiber: bool = True,
+    is_relevant: bool = True,
 ) -> None:
     now = datetime.now(timezone.utc)
     session.add(
@@ -80,7 +80,7 @@ def _seed_ticket(
             work_type="FIBER",
             location_text="",
             intersection_text="",
-            done_for="GOOGLE FIBER",
+            done_for="NORTHSTAR FIBER",
             utility_statuses=[],
             utility_codes=[],
             utility_references=[],
@@ -93,7 +93,7 @@ def _seed_ticket(
             status="active",
             is_cancelled=False,
             relevance_score=1.0,
-            is_gfiber_related=is_gfiber,
+            is_relevant=is_relevant,
             latitude=latitude,
             longitude=longitude,
             created_at=now,
@@ -137,7 +137,7 @@ class TestMatchEndToEnd:
                          latitude=36.100, longitude=-86.7295)
 
         with get_session() as session:
-            stats = match_all_gfiber_tickets(session)
+            stats = match_all_relevant_tickets(session)
 
         assert stats.high == 1
         assert stats.medium == stats.low == stats.none == 0
@@ -163,7 +163,7 @@ class TestMatchEndToEnd:
                          latitude=36.100 + 0.0018, longitude=-86.7295)
 
         with get_session() as session:
-            match_all_gfiber_tickets(session)
+            match_all_relevant_tickets(session)
 
         with get_session() as session:
             by_num = {
@@ -186,20 +186,20 @@ class TestMatchEndToEnd:
                          latitude=None, longitude=None)
 
         with get_session() as session:
-            stats = match_all_gfiber_tickets(session)
+            stats = match_all_relevant_tickets(session)
         assert stats.skipped_no_coords == 1
         assert stats.high == 0
 
-    def test_non_gfiber_ticket_is_not_matched(self, in_memory_db):
+    def test_non_relevant_ticket_is_not_matched(self, in_memory_db):
         from tn811.db import get_session
         with get_session() as session:
             _seed_package(session)
             _seed_ticket(session, ticket_number="T_NONGF",
-                         latitude=36.100, longitude=-86.7295, is_gfiber=False)
+                         latitude=36.100, longitude=-86.7295, is_relevant=False)
 
         with get_session() as session:
-            stats = match_all_gfiber_tickets(session)
-        # No GFiber tickets → total=0 from this test's perspective
+            stats = match_all_relevant_tickets(session)
+        # No relevant tickets → total=0 from this test's perspective
         assert stats.total == 0
 
     def test_dry_run_does_not_write(self, in_memory_db):
@@ -210,7 +210,7 @@ class TestMatchEndToEnd:
                          latitude=36.100, longitude=-86.7295)
 
         with get_session() as session:
-            stats = match_all_gfiber_tickets(session, dry_run=True)
+            stats = match_all_relevant_tickets(session, dry_run=True)
         assert stats.high == 1
         with get_session() as session:
             row = session.query(ORMTicket).filter_by(ticket_number="T_DRY").one()
@@ -224,7 +224,7 @@ class TestMatchEndToEnd:
                          latitude=36.100, longitude=-86.7295)
 
         with get_session() as session:
-            stats = match_all_gfiber_tickets(session)
+            stats = match_all_relevant_tickets(session)
         assert stats.skipped_no_packages == 1
         with get_session() as session:
             row = session.query(ORMTicket).filter_by(ticket_number="T_ONLY").one()

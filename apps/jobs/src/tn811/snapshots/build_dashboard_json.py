@@ -6,7 +6,7 @@ The dashboard React app reads only these files — no live DB or portal calls.
 
 Output files:
   summary.json         KPI counts
-  tickets_active.json  Active GFiber-related tickets
+  tickets_active.json  Active relevant tickets
   tickets_expiring.json Tickets expiring in the next N days
   by_county.json       Per-county breakdowns
   by_work_group.json   Per-work-group breakdowns
@@ -70,7 +70,7 @@ def _ticket_dict(t: ORMTicket) -> dict:
         "is_cancelled": t.is_cancelled,
         "relevance_score": t.relevance_score,
         "relevance_reasons": t.relevance_reasons or [],
-        "is_gfiber_related": t.is_gfiber_related,
+        "is_relevant": t.is_relevant,
         "probable_company": t.probable_company,
         "probable_work_group": t.probable_work_group,
         "probable_crew": t.probable_crew,
@@ -96,7 +96,7 @@ def build_all(session: Session, config: AppConfig) -> None:
     active_tickets: list[ORMTicket] = (
         session.query(ORMTicket)
         .filter(
-            ORMTicket.is_gfiber_related == True,  # noqa: E712
+            ORMTicket.is_relevant == True,  # noqa: E712
             ORMTicket.status == TicketStatus.ACTIVE.value,
         )
         .order_by(ORMTicket.expiration_date)
@@ -133,8 +133,8 @@ def build_all(session: Session, config: AppConfig) -> None:
 
     # ── Summary / KPIs ─────────────────────────────────────────────────────────
     total_tickets = session.query(ORMTicket).count()
-    total_gfiber = session.query(ORMTicket).filter(
-        ORMTicket.is_gfiber_related == True  # noqa: E712
+    total_relevant = session.query(ORMTicket).filter(
+        ORMTicket.is_relevant == True  # noqa: E712
     ).count()
     total_cancelled = session.query(ORMTicket).filter(
         ORMTicket.status == TicketStatus.CANCELLED.value
@@ -151,8 +151,8 @@ def build_all(session: Session, config: AppConfig) -> None:
         {
             "generated_at": now.isoformat(),
             "total_tickets": total_tickets,
-            "gfiber_related": total_gfiber,
-            "active_gfiber": len(active_tickets),
+            "relevant": total_relevant,
+            "active_relevant": len(active_tickets),
             "expiring_soon": len(expiring),
             "cancelled": total_cancelled,
             "expired": total_expired,
@@ -162,12 +162,12 @@ def build_all(session: Session, config: AppConfig) -> None:
 
     # ── By county ─────────────────────────────────────────────────────────────
     county_map: dict[str, dict] = {}
-    all_gfiber: list[ORMTicket] = (
+    all_relevant: list[ORMTicket] = (
         session.query(ORMTicket)
-        .filter(ORMTicket.is_gfiber_related == True)  # noqa: E712
+        .filter(ORMTicket.is_relevant == True)  # noqa: E712
         .all()
     )
-    for t in all_gfiber:
+    for t in all_relevant:
         county = t.county or "Unknown"
         if county not in county_map:
             county_map[county] = {"county": county, "total": 0, "active": 0, "expiring_soon": 0}
@@ -187,7 +187,7 @@ def build_all(session: Session, config: AppConfig) -> None:
 
     # ── By work group ─────────────────────────────────────────────────────────
     group_map: dict[str, dict] = {}
-    for t in all_gfiber:
+    for t in all_relevant:
         group = t.probable_work_group or t.probable_company or "Unassigned"
         if group not in group_map:
             group_map[group] = {
@@ -222,7 +222,7 @@ def build_all(session: Session, config: AppConfig) -> None:
     changed_tickets: list[ORMTicket] = (
         session.query(ORMTicket)
         .join(ORMTicketSnapshot)
-        .filter(ORMTicket.is_gfiber_related == True)  # noqa: E712
+        .filter(ORMTicket.is_relevant == True)  # noqa: E712
         .group_by(ORMTicket.id)
         .having(
             session.query(ORMTicketSnapshot)

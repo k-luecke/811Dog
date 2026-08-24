@@ -55,7 +55,7 @@ def _parse_kmz(path: Path) -> ET.Element:
 def _mk(
     *,
     ticket_number: str,
-    excavator: str = "BLUE OCEAN CONTRACTORS",
+    excavator: str = "NORTH RIDGE CONTRACTORS",
     call_date: date | None = None,
     expire_date: date | None = None,
     is_cancelled: bool = False,
@@ -96,7 +96,7 @@ def _mk(
         address="100 MAIN ST",
         intersection="1ST AVE",
         place="",
-        done_for="GOOGLE FIBER",
+        done_for="NORTHSTAR FIBER",
         is_ready_to_dig=is_ready_to_dig,
         has_late_utility=has_late_utility,
         late_utility_codes=late_codes or [],
@@ -153,12 +153,12 @@ def sample_views() -> list[TicketView]:
             latitude=36.08,
             longitude=-86.75,
             utility_statuses=[
-                {"code": "GFI", "name": "Google Fiber", "facility": "Fiber",
+                {"code": "GFI", "name": "Northstar Fiber", "facility": "Fiber",
                  "status": "pending", "is_late": True},
             ],
             has_late_utility=True,
             late_codes=["GFI"],
-            excavator="MAC UNDERGROUND",
+            excavator="SUMMIT UNDERGROUND",
         ),
         # E — no coords, should be silently skipped
         _mk(
@@ -175,8 +175,8 @@ def sample_views() -> list[TicketView]:
 def test_kmz_is_valid_zip_and_kml(tmp_path, sample_views):
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -192,14 +192,14 @@ def test_kmz_is_valid_zip_and_kml(tmp_path, sample_views):
     assert any("by urgency" in n for n in top_folders)
     assert any("by utility status" in n for n in top_folders)
     assert any("by sub" in n for n in top_folders)
-    assert any("Cancelled GFiber" in n for n in top_folders)
+    assert any("Cancelled relevant" in n for n in top_folders)
 
 
 def test_no_coords_ticket_is_skipped_silently(tmp_path, sample_views):
     out = tmp_path / "out.kmz"
     manifest = _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -216,8 +216,8 @@ def test_coordinate_order_is_lon_lat(tmp_path, sample_views):
     """KML spec: coords are 'longitude,latitude[,altitude]' — reverse of DB storage."""
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -240,8 +240,8 @@ def test_long_segment_renders_line_plus_midpoint(tmp_path, sample_views):
     """Ticket B's coords are ~200m apart — should produce a LineString AND a Point."""
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -279,8 +279,8 @@ def test_html_escaped_in_descriptions(tmp_path):
     ]
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=views,
-        views_ervin_non_gf=[],
+        views_relevant=views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -305,11 +305,11 @@ def test_html_escaped_in_descriptions(tmp_path):
 
 
 def test_active_ticket_appears_in_all_three_axes(tmp_path, sample_views):
-    """Ticket A (active GFiber) must appear in urgency + utility + sub axes."""
+    """Ticket A (active relevant) must appear in urgency + utility + sub axes."""
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -325,8 +325,8 @@ def test_active_ticket_appears_in_all_three_axes(tmp_path, sample_views):
 def test_cancelled_ticket_in_cancelled_folder_only(tmp_path, sample_views):
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -335,7 +335,7 @@ def test_cancelled_ticket_in_cancelled_folder_only(tmp_path, sample_views):
     # Ticket C should appear only in Cancelled folder
     cancelled_folder = next(
         f for f in doc.findall("kml:Folder", _NS)
-        if "Cancelled GFiber" in (f.findtext("kml:name", default="", namespaces=_NS) or "")
+        if "Cancelled relevant" in (f.findtext("kml:name", default="", namespaces=_NS) or "")
     )
     pms = cancelled_folder.findall(".//kml:Placemark", _NS)
     names = [pm.findtext("kml:name", default="", namespaces=_NS) for pm in pms]
@@ -343,7 +343,7 @@ def test_cancelled_ticket_in_cancelled_folder_only(tmp_path, sample_views):
     # And should not appear in any active folder
     for top in doc.findall("kml:Folder", _NS):
         nm = top.findtext("kml:name", default="", namespaces=_NS) or ""
-        if "Active GFiber" in nm:
+        if "Active relevant" in nm:
             for pm in top.findall(".//kml:Placemark", _NS):
                 assert pm.findtext("kml:name", default="", namespaces=_NS) != "C"
 
@@ -352,7 +352,7 @@ def test_cancelled_ticket_in_cancelled_folder_only(tmp_path, sample_views):
 
 
 def test_sub_color_is_deterministic():
-    name = "BLUE OCEAN CONTRACTORS"
+    name = "NORTH RIDGE CONTRACTORS"
     c1 = sub_color(name)
     c2 = sub_color(name)
     assert c1 == c2
@@ -362,11 +362,11 @@ def test_sub_color_differs_between_subs():
     # Not a strict guarantee in general, but for distinct names of normal length
     # the MD5 collision space is huge — in practice every pair is different.
     samples = [
-        "BLUE OCEAN CONTRACTORS",
-        "MAC UNDERGROUND",
-        "CIVCOM CONSTRUCTION",
-        "FLORIDA ARMSTRONG",
-        "DTOB SOLUTIONS LLC",
+        "NORTH RIDGE CONTRACTORS",
+        "SUMMIT UNDERGROUND",
+        "LAKESIDE CONSTRUCTION",
+        "COASTAL UNDERGROUND",
+        "DTX SOLUTIONS LLC",
     ]
     colors = {sub_color(n) for n in samples}
     assert len(colors) == len(samples)
@@ -442,8 +442,8 @@ def test_problem_ticket_gets_caution_icon(tmp_path, sample_views):
     """Ticket D has has_late_utility=True — placemarks must use the caution icon."""
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -472,8 +472,8 @@ def test_caution_icon_absent_when_no_problem_tickets(tmp_path):
     ]
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=views,
-        views_ervin_non_gf=[],
+        views_relevant=views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -550,8 +550,8 @@ class TestApplyAlpha:
 def test_circle_folder_hidden_by_default(tmp_path, sample_views):
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -572,8 +572,8 @@ def test_polyline_ticket_gets_no_circle(tmp_path, sample_views):
     Ticket A and D are point-rendered and should each get one circle."""
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -604,8 +604,8 @@ def test_circle_opacity_in_kml(tmp_path, sample_views):
     the output."""
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -620,12 +620,12 @@ def test_circle_opacity_in_kml(tmp_path, sample_views):
 
 
 def test_circle_count_matches_point_rendered_active_tickets(tmp_path, sample_views):
-    """One circle per point-only active GFiber ticket. Polyline, cancelled,
-    and non-GFiber tickets must not produce circles."""
+    """One circle per point-only active relevant ticket. Polyline, cancelled,
+    and non-relevant tickets must not produce circles."""
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -636,7 +636,7 @@ def test_circle_count_matches_point_rendered_active_tickets(tmp_path, sample_vie
         if "Dig zone circles" in (f.findtext("kml:name", default="", namespaces=_NS) or "")
     )
     circle_count = len(dig.findall(".//kml:Polygon", _NS))
-    # Count expected: active GFiber + point-rendered (not polyline)
+    # Count expected: active relevant + point-rendered (not polyline)
     from tn811.exporters.kmz_export import _is_point_only
     expected = sum(
         1 for v in sample_views
@@ -649,8 +649,8 @@ def test_circle_ring_vertices_match_expected_geometry(tmp_path, sample_views):
     """Parse one circle's outerBoundaryIs and verify it has 33 vertices (32 closed)."""
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )
@@ -739,8 +739,8 @@ def _fake_conflict_pkg(
 def test_google_packages_split_into_three_subfolders(tmp_path, sample_views):
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
         nashdigs_google=[
@@ -771,8 +771,8 @@ def test_conflict_folder_only_appears_when_non_google_packages_present(tmp_path,
     """Without non-Google packages, the conflict folder must not be created."""
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
         nashdigs_google=[_fake_google_pkg()],
@@ -790,8 +790,8 @@ def test_conflict_folder_only_appears_when_non_google_packages_present(tmp_path,
 def test_conflict_folder_renders_polygon_and_line_features(tmp_path, sample_views):
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
         nashdigs_google=[],
@@ -813,8 +813,8 @@ def test_conflict_folder_renders_polygon_and_line_features(tmp_path, sample_view
 def test_package_popup_includes_ticket_counts(tmp_path, sample_views):
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
         nashdigs_google=[_fake_google_pkg(name="BNA999a", project_id=42)],
@@ -828,7 +828,7 @@ def test_package_popup_includes_ticket_counts(tmp_path, sample_views):
             next(n for n in z.namelist() if n.endswith(".kml"))
         ).decode("utf-8")
     assert "BNA999a" in kml_text
-    assert "Ervin GFiber tickets tagged" in kml_text
+    assert "Meridian relevant tickets tagged" in kml_text
     # simplekml XML-escapes the HTML description, so the inner `>5<` of the
     # popup becomes `&gt;5&lt;` inside the KML text. Match that form.
     assert "&gt;5&lt;" in kml_text  # total
@@ -838,8 +838,8 @@ def test_package_popup_includes_ticket_counts(tmp_path, sample_views):
 def test_header_description_mentions_circle_layer(tmp_path, sample_views):
     out = tmp_path / "out.kmz"
     _build_and_save(
-        views_gfiber=sample_views,
-        views_ervin_non_gf=[],
+        views_relevant=sample_views,
+        views_contractor_other=[],
         out_path=out,
         now_ct=NOW_CT,
     )

@@ -1,14 +1,17 @@
 """
-Tests for the Ervin Cable classification story:
+Tests for the prime-contractor classification story:
 
-  1. `_worth_detail_fetch` in cli.py — the row-level pre-filter that decides
-     whether a CSV row is worth fetching the detail page for. Must accept
-     "ervin cable" in WorkDoneFor so MAC Underground / Civcom tickets trigger
-     a full fetch at scrape time.
+  1. `_worth_detail_fetch` in cli.py — the row-level pre-filter deciding whether
+     a search-results row is worth fetching a detail page for. A prime
+     contractor named in WorkDoneFor must trigger a full fetch at scrape time,
+     so tickets filed by its subcontractors are not silently ingested row-only.
 
-  2. `rescore` CLI command — re-runs the current relevance rules against every
-     ticket already in the DB, so changes to rules or the addition of a new
-     prime signal surface existing tickets without a rescrape.
+  2. `rescore` CLI command — re-runs the current relevance rules over every
+     ticket already in the DB, so a rule change surfaces existing tickets
+     without a rescrape.
+
+All contractor and work-type signals come from config; the fixture below stands
+in for a deployment's own `relevance` section.
 """
 from __future__ import annotations
 
@@ -16,6 +19,17 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from tn811.cli import _worth_detail_fetch
+from tn811.config import ContractorRule, RelevanceConfig
+
+# Stands in for a deployment's configured relevance section.
+_RELEVANCE = RelevanceConfig(
+    detail_fetch_done_for=["northstar fiber", "meridian cable"],
+    detail_fetch_work_types=["fiber optic", "ftth", "fiber instl", "fiber bury"],
+    contractor_rule=ContractorRule(
+        contractor_keywords=["north ridge", "coastal underground", "lakeside"],
+        work_keywords=["fiber", "conduit", "telecom", "boring"],
+    ),
+)
 
 
 def _row(
@@ -36,21 +50,21 @@ def _row(
 
 
 class TestWorthDetailFetch:
-    def test_ervin_cable_in_done_for_triggers_fetch(self):
-        assert _worth_detail_fetch(_row(work_done_for="ERVIN CABLE CONSTRUCTION"))
-        assert _worth_detail_fetch(_row(work_done_for="Ervin Cable/Google Fiber"))
-        assert _worth_detail_fetch(_row(work_done_for="ervin cable"))
+    def test_prime_contractor_in_done_for_triggers_fetch(self):
+        assert _worth_detail_fetch(_row(work_done_for="MERIDIAN CABLE CONSTRUCTION"), _RELEVANCE)
+        assert _worth_detail_fetch(_row(work_done_for="Meridian Cable/Northstar Fiber"), _RELEVANCE)
+        assert _worth_detail_fetch(_row(work_done_for="Meridian Cable"), _RELEVANCE)
 
     def test_google_in_done_for_still_triggers_fetch(self):
-        assert _worth_detail_fetch(_row(work_done_for="GOOGLE FIBER"))
-        assert _worth_detail_fetch(_row(work_done_for="GOOGLE FIBER 6459663"))
+        assert _worth_detail_fetch(_row(work_done_for="NORTHSTAR FIBER"), _RELEVANCE)
+        assert _worth_detail_fetch(_row(work_done_for="NORTHSTAR FIBER 6459663"), _RELEVANCE)
 
-    def test_gfiber_sub_excavator_triggers_fetch(self):
-        assert _worth_detail_fetch(_row(excavator="BLUE OCEAN CONTRACTORS"))
+    def test_tracked_contractor_excavator_triggers_fetch(self):
+        assert _worth_detail_fetch(_row(excavator="NORTH RIDGE CONTRACTORS"), _RELEVANCE)
 
     def test_fiber_work_type_triggers_fetch(self):
-        assert _worth_detail_fetch(_row(work_type="FIBER INSTL"))
-        assert _worth_detail_fetch(_row(work_type="FIBER OPTIC INSTALLATION"))
+        assert _worth_detail_fetch(_row(work_type="FIBER INSTL"), _RELEVANCE)
+        assert _worth_detail_fetch(_row(work_type="FIBER OPTIC INSTALLATION"), _RELEVANCE)
 
     def test_unrelated_row_does_not_trigger_fetch(self):
         assert not _worth_detail_fetch(
@@ -58,20 +72,21 @@ class TestWorthDetailFetch:
                 work_done_for="CENTURY COMMUNITIES",
                 excavator="RANDOM PLUMBER",
                 work_type="WATER SEWER REPAIR",
-            )
+            ),
+            _RELEVANCE,
         )
 
-    def test_jeff_ervin_namesake_does_not_trigger(self):
-        """The 'JEFF ERVIN' namesake in done_for is not 'ervin cable' — no fetch."""
-        assert not _worth_detail_fetch(_row(work_done_for="JEFF ERVIN"))
+    def test_namesake_person_does_not_trigger(self):
+        """The 'JEFF MERIDIAN' namesake in done_for is not 'Meridian Cable' — no fetch."""
+        assert not _worth_detail_fetch(_row(work_done_for="JEFF MERIDIAN"), _RELEVANCE)
 
 
 # ── rescore ───────────────────────────────────────────────────────────────────
 
 
-def test_rescore_flips_previously_unflagged_ervin_ticket(in_memory_db, base_config):
-    """A row already in the DB with is_gfiber_related=0 must become =1 after
-    the Ervin Cable rule is applied via `rescore`."""
+def test_rescore_flips_previously_unflagged_ticket(in_memory_db, base_config):
+    """A row already in the DB with is_relevant=0 must become =1 after
+    the Meridian Cable rule is applied via `rescore`."""
     from click.testing import CliRunner
 
     from tn811.cli import main
@@ -80,17 +95,17 @@ def test_rescore_flips_previously_unflagged_ervin_ticket(in_memory_db, base_conf
 
     now = datetime.now(timezone.utc)
     with get_session() as session:
-        # Simulate a row that was stored at scrape time WITHOUT the Ervin rule
-        # (score=0.0, flag=False). Exactly matches MAC Underground's real rows.
+        # Simulate a row that was stored at scrape time WITHOUT the Meridian rule
+        # (score=0.0, flag=False). Exactly matches Summit Underground's real rows.
         session.add(
             ORMTicket(
                 ticket_number="MACTEST001",
                 county="Davidson County",
                 state="TN",
                 call_date="2026-04-20",
-                excavator_name="MAC UNDERGROUND",
+                excavator_name="SUMMIT UNDERGROUND",
                 work_type="CONDUIT INSTL",
-                done_for="ERVIN CABLE CONSTRUCTION",
+                done_for="MERIDIAN CABLE CONSTRUCTION",
                 utility_statuses=[],
                 utility_codes=[],
                 utility_references=[],
@@ -104,7 +119,7 @@ def test_rescore_flips_previously_unflagged_ervin_ticket(in_memory_db, base_conf
                 is_cancelled=False,
                 relevance_score=0.0,
                 relevance_reasons=[],
-                is_gfiber_related=False,
+                is_relevant=False,
                 created_at=now,
                 updated_at=now,
                 latest_content_hash="before",
@@ -130,8 +145,8 @@ def test_rescore_flips_previously_unflagged_ervin_ticket(in_memory_db, base_conf
                 "relevance": {
                     "score_threshold": 0.45,
                     "positive_rules": [
-                        {"id": "done_for_ervin_cable", "field": "done_for",
-                         "match_type": "contains", "pattern": "ervin cable",
+                        {"id": "done_for_prime_contractor", "field": "done_for",
+                         "match_type": "contains", "pattern": "Meridian Cable",
                          "weight": 1.0, "case_sensitive": False},
                     ],
                     "negative_rules": [],
@@ -143,14 +158,14 @@ def test_rescore_flips_previously_unflagged_ervin_ticket(in_memory_db, base_conf
     runner = CliRunner()
     result = runner.invoke(main, ["rescore", "--config", cfg_path])
     assert result.exit_code == 0, result.output
-    assert "+    1  newly flagged as GFiber" in result.output, result.output
+    assert "+    1  newly flagged as relevant" in result.output, result.output
 
     # Verify the DB row was actually written
     with get_session() as session:
         row = session.query(ORMTicket).filter_by(ticket_number="MACTEST001").one()
-        assert row.is_gfiber_related is True
+        assert row.is_relevant is True
         assert row.relevance_score >= 0.45
-        assert any("done_for_ervin_cable" in r for r in row.relevance_reasons)
+        assert any("done_for_prime_contractor" in r for r in row.relevance_reasons)
 
 
 def test_rescore_dry_run_does_not_write(in_memory_db):
@@ -168,9 +183,9 @@ def test_rescore_dry_run_does_not_write(in_memory_db):
                 ticket_number="DRYRUN001",
                 county="Davidson County",
                 state="TN",
-                excavator_name="MAC UNDERGROUND",
+                excavator_name="SUMMIT UNDERGROUND",
                 work_type="CONDUIT INSTL",
-                done_for="ERVIN CABLE CONSTRUCTION",
+                done_for="MERIDIAN CABLE CONSTRUCTION",
                 utility_statuses=[],
                 utility_codes=[],
                 utility_references=[],
@@ -183,7 +198,7 @@ def test_rescore_dry_run_does_not_write(in_memory_db):
                 status="active",
                 is_cancelled=False,
                 relevance_score=0.0,
-                is_gfiber_related=False,
+                is_relevant=False,
                 created_at=now,
                 updated_at=now,
                 latest_content_hash="x",
@@ -208,8 +223,8 @@ def test_rescore_dry_run_does_not_write(in_memory_db):
                 "relevance": {
                     "score_threshold": 0.45,
                     "positive_rules": [
-                        {"id": "done_for_ervin_cable", "field": "done_for",
-                         "match_type": "contains", "pattern": "ervin cable",
+                        {"id": "done_for_prime_contractor", "field": "done_for",
+                         "match_type": "contains", "pattern": "Meridian Cable",
                          "weight": 1.0, "case_sensitive": False},
                     ],
                     "negative_rules": [],
@@ -225,5 +240,5 @@ def test_rescore_dry_run_does_not_write(in_memory_db):
 
     with get_session() as session:
         row = session.query(ORMTicket).filter_by(ticket_number="DRYRUN001").one()
-        assert row.is_gfiber_related is False  # unchanged
+        assert row.is_relevant is False  # unchanged
         assert float(row.relevance_score) == 0.0

@@ -111,7 +111,7 @@ class NormalizedTicket(BaseModel):
     location_text: str | None = None
     intersection_text: str | None = None
     remarks: str | None = None
-    done_for: str | None = None          # entity the work is being done for (e.g. "GOOGLE FIBER")
+    done_for: str | None = None          # entity the work is being done for (e.g. "NORTHSTAR FIBER")
 
     # Geographic coordinates (two points = line segment of the dig path).
     latitude: float | None = None
@@ -143,7 +143,7 @@ class NormalizedTicket(BaseModel):
     # Relevance (populated by relevance engine)
     relevance_score: float = 0.0
     relevance_reasons: list[str] = Field(default_factory=list)
-    is_gfiber_related: bool = False
+    is_relevant: bool = False
 
     # Inferred grouping (populated by grouping engine)
     probable_company: str | None = None
@@ -183,13 +183,13 @@ class NormalizedTicket(BaseModel):
 
         Fields that do NOT affect the content hash (runtime metadata):
         - parsed_at, parse_method, probable_company, probable_work_group,
-          probable_crew, relevance_score, relevance_reasons, is_gfiber_related
+          probable_crew, relevance_score, relevance_reasons, is_relevant
         """
         stable_fields = self.model_dump(
             exclude={
                 "parsed_at", "parse_method",
                 "probable_company", "probable_work_group", "probable_crew",
-                "relevance_score", "relevance_reasons", "is_gfiber_related",
+                "relevance_score", "relevance_reasons", "is_relevant",
             }
         )
         payload = json.dumps(stable_fields, sort_keys=True, default=str)
@@ -206,7 +206,7 @@ class TicketSummary(BaseModel):
     work_type: str | None
     location_text: str | None
     status: TicketStatus
-    is_gfiber_related: bool
+    is_relevant: bool
     relevance_score: float
     probable_company: str | None
     probable_work_group: str | None
@@ -264,7 +264,7 @@ class ORMTicket(Base):
     location_text = Column(Text)
     intersection_text = Column(Text)
     remarks = Column(Text)
-    done_for = Column(Text, index=True)     # entity the work is done for (e.g. GOOGLE FIBER)
+    done_for = Column(Text, index=True)     # entity the work is done for (e.g. NORTHSTAR FIBER)
 
     # Geographic coordinates (from detail page Work Information block)
     latitude = Column(Float)
@@ -292,7 +292,7 @@ class ORMTicket(Base):
 
     relevance_score = Column(Float, nullable=False, default=0.0)
     relevance_reasons = Column(JSON)        # list[str]
-    is_gfiber_related = Column(Boolean, nullable=False, default=False, index=True)
+    is_relevant = Column(Boolean, nullable=False, default=False, index=True)
 
     probable_company = Column(Text, index=True)
     probable_work_group = Column(Text, index=True)
@@ -517,7 +517,7 @@ def orm_to_normalized(t: ORMTicket) -> NormalizedTicket:
         is_cancelled=bool(t.is_cancelled),
         relevance_score=float(t.relevance_score or 0.0),
         relevance_reasons=t.relevance_reasons or [],
-        is_gfiber_related=bool(t.is_gfiber_related),
+        is_relevant=bool(t.is_relevant),
         probable_company=t.probable_company,
         probable_work_group=t.probable_work_group,
         probable_crew=t.probable_crew,
@@ -563,7 +563,7 @@ def normalized_to_orm_dict(ticket: NormalizedTicket, now: datetime) -> dict[str,
         "is_cancelled": ticket.is_cancelled,
         "relevance_score": ticket.relevance_score,
         "relevance_reasons": ticket.relevance_reasons,
-        "is_gfiber_related": ticket.is_gfiber_related,
+        "is_relevant": ticket.is_relevant,
         "probable_company": ticket.probable_company,
         "probable_work_group": ticket.probable_work_group,
         "probable_crew": ticket.probable_crew,

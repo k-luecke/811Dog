@@ -47,7 +47,7 @@ class TestGetSession:
                 status="active",
                 is_cancelled=False,
                 relevance_score=0.9,
-                is_gfiber_related=True,
+                is_relevant=True,
                 created_at=NOW,
                 updated_at=NOW,
             )
@@ -71,7 +71,7 @@ class TestGetSession:
                     status="active",
                     is_cancelled=False,
                     relevance_score=0.5,
-                    is_gfiber_related=False,
+                    is_relevant=False,
                     created_at=NOW,
                     updated_at=NOW,
                 )
@@ -95,7 +95,7 @@ class TestGetSession:
                 status="active",
                 is_cancelled=False,
                 relevance_score=0.8,
-                is_gfiber_related=True,
+                is_relevant=True,
                 created_at=NOW,
                 updated_at=NOW,
             )
@@ -128,7 +128,7 @@ class TestGetSession:
                 status="active",
                 is_cancelled=False,
                 relevance_score=0.5,
-                is_gfiber_related=False,
+                is_relevant=False,
                 created_at=NOW,
                 updated_at=NOW,
             )

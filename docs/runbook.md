@@ -9,7 +9,7 @@ Operational procedures for the TN811 Monitor system.
 | Time (CT) | Workflow | What it does |
 |---|---|---|
 | 6:00 AM | `scrape.yml` | Scrapes portal, downloads PDFs, scores relevance, updates DB, rebuilds JSON, commits |
-| 8:00 AM | `remind.yml` | Sends expiry reminder emails for GFiber tickets expiring in 4 days |
+| 8:00 AM | `remind.yml` | Sends expiry reminder emails for relevant tickets expiring in 4 days |
 | On push to main | `publish.yml` | Rebuilds and deploys dashboard to GitHub Pages |
 
 ---

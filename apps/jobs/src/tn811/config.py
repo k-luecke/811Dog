@@ -119,11 +119,34 @@ class RelevanceOverrides:
 
 
 @dataclass
+class ContractorRule:
+    """
+    Compound signal: a ticket counts as relevant when the excavator matches one
+    of `contractor_keywords` AND the work type or remarks mention one of
+    `work_keywords`.
+
+    Kept in config rather than in code because the contractor list is
+    deployment-specific — whoever runs this monitor tracks different firms than
+    whoever wrote it. An empty `contractor_keywords` disables the rule.
+    """
+    contractor_keywords: list[str] = field(default_factory=list)
+    work_keywords: list[str] = field(default_factory=list)
+
+    def is_enabled(self) -> bool:
+        return bool(self.contractor_keywords and self.work_keywords)
+
+
+@dataclass
 class RelevanceConfig:
     score_threshold: float = 0.45
     positive_rules: list[RelevanceRule] = field(default_factory=list)
     negative_rules: list[RelevanceRule] = field(default_factory=list)
     overrides: RelevanceOverrides = field(default_factory=RelevanceOverrides)
+    contractor_rule: ContractorRule = field(default_factory=ContractorRule)
+    # Substrings in the `done_for` field that alone justify fetching a ticket's
+    # detail page during scraping. Deployment-specific, so config-driven.
+    detail_fetch_done_for: list[str] = field(default_factory=list)
+    detail_fetch_work_types: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -248,11 +271,19 @@ def load_config(path: str | Path = "config/monitoring.yaml") -> AppConfig:
             include=overrides_raw.get("include", []),
             exclude=overrides_raw.get("exclude", []),
         )
+        cr_raw = rel_raw.get("contractor_rule", {}) or {}
+        contractor_rule = ContractorRule(
+            contractor_keywords=[str(k).lower() for k in cr_raw.get("contractor_keywords", [])],
+            work_keywords=[str(k).lower() for k in cr_raw.get("work_keywords", [])],
+        )
         cfg.relevance = RelevanceConfig(
             score_threshold=rel_raw.get("score_threshold", 0.45),
             positive_rules=pos_rules,
             negative_rules=neg_rules,
             overrides=overrides,
+            contractor_rule=contractor_rule,
+            detail_fetch_done_for=[str(k).lower() for k in rel_raw.get("detail_fetch_done_for", [])],
+            detail_fetch_work_types=[str(k).lower() for k in rel_raw.get("detail_fetch_work_types", [])],
         )
 
     # grouping

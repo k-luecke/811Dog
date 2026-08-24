@@ -3,7 +3,7 @@ reminders/rules.py — Eligibility rules for ticket expiry reminders.
 
 Determines which tickets qualify for a reminder email based on:
 - Expiration date is exactly lead_days from today (in the configured timezone)
-- Ticket is GFiber-related
+- Ticket is relevant
 - Ticket is not cancelled or already expired
 - No reminder has already been sent for this ticket+expiration+lead_days combo
 
@@ -51,12 +51,12 @@ def is_eligible_for_reminder(
     Return True if this ticket should receive a reminder.
 
     Eligibility criteria:
-    1. is_gfiber_related (only send reminders for relevant tickets)
+    1. is_relevant (only send reminders for relevant tickets)
     2. expiration_date == target_expiration
     3. status is ACTIVE (not cancelled, not already expired)
     4. expiration_date is not None
     """
-    if not ticket.is_gfiber_related:
+    if not ticket.is_relevant:
         return False
 
     if ticket.expiration_date is None:
@@ -79,7 +79,7 @@ def filter_eligible_tickets(
     Filter a list of tickets to those eligible for a reminder.
 
     Args:
-        tickets:           All GFiber-related active tickets.
+        tickets:           All relevant active tickets.
         target_expiration: The expiration date to match.
 
     Returns:

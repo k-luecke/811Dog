@@ -20,7 +20,7 @@ export interface Ticket {
   is_cancelled: boolean;
   relevance_score: number;
   relevance_reasons: string[];
-  is_gfiber_related: boolean;
+  is_relevant: boolean;
   probable_company: string | null;
   probable_work_group: string | null;
   probable_crew: string | null;
@@ -31,8 +31,8 @@ export interface Ticket {
 export interface Summary {
   generated_at: string;
   total_tickets: number;
-  gfiber_related: number;
-  active_gfiber: number;
+  relevant: number;
+  active_relevant: number;
   expiring_soon: number;
   cancelled: number;
   expired: number;

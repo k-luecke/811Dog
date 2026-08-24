@@ -75,68 +75,50 @@ pdf:
   tesseract_path: "/usr/bin/tesseract"
 
 # ── Relevance engine ──────────────────────────────────────────────────────────
+# This whole section is an EXAMPLE. It is tuned for tracking fiber-installation
+# work, because that is what the author needed. Replace the patterns with
+# whatever your own operation cares about — the engine has no built-in notion of
+# any company, utility, or work type.
 relevance:
-  # Tickets at or above this score are flagged is_gfiber_related
+  # Tickets scoring at or above this are flagged is_relevant.
   score_threshold: 0.45
 
-  # Weighted positive match rules
-  # field: which ticket field(s) to search (comma-sep or "any")
-  # match_type: contains | exact | regex
-  # weight: contribution to score (scores are clamped 0.0–1.0)
+  # Weighted positive rules.
+  #   field:       a NormalizedTicket field name, or "any" to search all of them
+  #   match_type:  contains | exact | regex
+  #   weight:      contribution to the score (the sum is clamped to 0.0–1.0)
   positive_rules:
-    # ── Primary signals (done_for field is the strongest indicator) ────────────
-    - id: done_for_google_fiber
+    # The `done_for` field — who the excavation is being performed for — is
+    # usually the single strongest signal, so name your target there.
+    - id: done_for_target_company
       field: "done_for"
       match_type: "contains"
-      pattern: "google fiber"
-      weight: 1.0
+      pattern: "northstar fiber"
+      weight: 1.00
       case_sensitive: false
 
-    - id: done_for_google
+    # A prime contractor whose subcontractors file tickets under the prime's
+    # name. Scoped to `done_for` rather than "any" so a namesake person in a
+    # caller field does not trigger it.
+    - id: done_for_prime_contractor
       field: "done_for"
       match_type: "contains"
-      pattern: "google"
-      weight: 0.90
+      pattern: "meridian cable"
+      weight: 1.00
       case_sensitive: false
 
-    # Prime contractor whose subs (MAC Underground, Civcom, etc.) fill 811
-    # tickets as done_for=<this prime>. Scoping to done_for avoids matching
-    # namesake people (e.g. "Jeff Ervin") and Ervin-as-excavator rows whose
-    # done_for may be a different prime.
-    - id: done_for_ervin_cable
-      field: "done_for"
-      match_type: "contains"
-      pattern: "ervin cable"
-      weight: 1.0
-      case_sensitive: false
-
-    # GFI utility response code (utility_codes field populated from detail page)
-    - id: utility_code_gfi
+    # Utility response codes appear on the detail page. If the utility you care
+    # about has its own member code, matching it is a near-certain signal.
+    - id: utility_code_target
       field: "utility_codes"
       match_type: "contains"
-      pattern: "GFI"
-      weight: 1.0
+      pattern: "NSF"
+      weight: 1.00
       case_sensitive: false
 
-    # ── Subcontractor keyword matches (handled separately in code, listed here
-    #    for visibility — the hard-signal logic in matcher.py applies these) ──
-    # blue ocean, florida armstrong, amzung, dto, civcom, cattail, ama
-
-    # ── Existing high-confidence signals ──────────────────────────────────────
-    - id: google_fiber_exact
-      field: "any"
-      match_type: "contains"
-      pattern: "google fiber"
-      weight: 1.0
-      case_sensitive: false
-
-    - id: gfiber_exact
-      field: "any"
-      match_type: "contains"
-      pattern: "gfiber"
-      weight: 1.0
-      case_sensitive: false
-
+    # ── Generic work-type signals ────────────────────────────────────────────
+    # These need no company knowledge and are a reasonable starting point for
+    # any fiber-adjacent deployment.
     - id: ftth
       field: "any"
       match_type: "contains"
@@ -193,6 +175,8 @@ relevance:
       weight: 0.40
       case_sensitive: false
 
+    # Weak on its own — "fiber" shows up in plenty of unrelated tickets — so it
+    # sits below the threshold and only matters in combination.
     - id: fiber_generic
       field: "any"
       match_type: "contains"
@@ -200,7 +184,7 @@ relevance:
       weight: 0.30
       case_sensitive: false
 
-  # Negative rules reduce score when matched
+  # Negative rules subtract from the score.
   negative_rules:
     - id: water_sewer_only
       field: "work_type"
@@ -216,7 +200,38 @@ relevance:
       weight: -0.20
       case_sensitive: false
 
-  # Manual overrides by ticket number take precedence over scoring
+  # Compound signal: a tracked contractor AND the right kind of work. Lifts a
+  # ticket to the threshold even when no weighted rule fired — useful for subs
+  # who file terse tickets that name neither the prime nor the technology.
+  #
+  # Both lists must be non-empty or the rule is skipped entirely. Matching is on
+  # normalized text (lowercased, punctuation stripped), so "north ridge" matches
+  # "NORTH RIDGE, LLC.".
+  contractor_rule:
+    contractor_keywords:
+      - "north ridge"
+      - "coastal underground"
+      - "lakeside"
+    work_keywords:
+      - "fiber"
+      - "conduit"
+      - "telecom"
+      - "boring"
+
+  # Scrape-time pre-filter. The search grid lacks utility statuses and full
+  # remarks, so a ticket matching any of these gets its detail page fetched.
+  # Bias toward over-fetching: a missed detail page means a missed ticket, while
+  # an extra fetch just costs a request.
+  detail_fetch_done_for:
+    - "northstar fiber"
+    - "meridian cable"
+  detail_fetch_work_types:
+    - "fiber optic"
+    - "ftth"
+    - "fiber instl"
+    - "fiber bury"
+
+  # Manual overrides by ticket number beat scoring in both directions.
   overrides:
     include: []
     # - "TN20240101-123456"

@@ -2,7 +2,7 @@
 
 ## Overview
 
-TN811 Monitor is a Python + React system that monitors the Tennessee 811 public ticket portal for excavation tickets likely related to Google Fiber / GFiber installation work, and surfaces them via a static dashboard hosted on GitHub Pages.
+TN811 Monitor is a Python + React system that monitors the Tennessee 811 public ticket portal for excavation tickets likely related to Northstar Fiber / relevant installation work, and surfaces them via a static dashboard hosted on GitHub Pages.
 
 ## Component Map
 

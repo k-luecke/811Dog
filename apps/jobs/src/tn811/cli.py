@@ -45,7 +45,7 @@ def _load_app(config_path: str):
 
 @click.group()
 def main():
-    """TN811 Monitor — internal GFiber ticket tracking tool."""
+    """TN811 Monitor — internal relevant ticket tracking tool."""
     pass
 
 
@@ -126,7 +126,7 @@ async def _run_scrape(cfg, counties, dry_run: bool):
                         if not dry_run:
                             _record_failure(row.ticket_number, row.county, exc)
 
-        # Run work-group inference on all GFiber-related active tickets
+        # Run work-group inference on all relevant active tickets
         if not dry_run:
             _run_grouping(cfg)
 
@@ -162,30 +162,32 @@ async def _run_scrape(cfg, counties, dry_run: bool):
     )
 
 
-_GFIBER_SUBCONTRACTORS: frozenset[str] = frozenset({
-    "cui cable", "florida armstrong", "blue ocean", "dtob",
-    "civcom", "amzung", "cattail",
-})
+def _worth_detail_fetch(row, relevance_cfg) -> bool:
+    """Return True if this row is worth fetching a detail page for.
 
+    The search-results grid carries only a handful of columns; the detail page
+    adds utility statuses and full remarks that the scorer relies on. Fetching
+    every row would mean tens of thousands of requests per run, so this is a
+    cheap pre-filter, deliberately biased toward fetching.
 
-def _worth_detail_fetch(row) -> bool:
-    """Return True if this row is a plausible GFiber ticket worth fetching detail for.
-
-    Kept in sync with the relevance rules' primary `done_for` signals. "ervin cable"
-    is listed here so Ervin-subcontracted work (MAC Underground, Civcom, etc.)
-    gets its detail page fetched at scrape time — without this, those rows go in
-    row-only and miss the utility-status + full-text context the scorer relies on.
+    Every signal is config-driven (`relevance.detail_fetch_done_for`,
+    `relevance.detail_fetch_work_types`, and `relevance.contractor_rule`)
+    because which firms and work types matter is a property of the deployment,
+    not of this code. With none of them configured no row is pre-filtered in,
+    and the caller falls back to row-only ingestion.
     """
     wdf = (row.work_done_for_raw or "").lower()
     exc = (row.excavator_name_raw or "").lower()
     wt = (row.work_type_raw or "").lower()
-    return (
-        "google" in wdf
-        or "gfiber" in wdf
-        or "ervin cable" in wdf
-        or any(s in exc for s in _GFIBER_SUBCONTRACTORS)
-        or any(kw in wt for kw in ("fiber optic", "ftth", "fiber instl", "fiber bury"))
-    )
+
+    if any(s in wdf for s in relevance_cfg.detail_fetch_done_for):
+        return True
+    if any(kw in wt for kw in relevance_cfg.detail_fetch_work_types):
+        return True
+
+    contractors = relevance_cfg.contractor_rule.contractor_keywords
+    return bool(contractors) and any(s in exc for s in contractors)
+
 
 
 async def _process_ticket_row(
@@ -196,12 +198,12 @@ async def _process_ticket_row(
     from tn811.models import ORMTicket, ORMTicketSnapshot, normalized_to_orm_dict
     from tn811.normalize.tickets import normalize_ticket
 
-    # Fetch detail page only for GFiber candidates — ~50-500 per county vs 11,000+.
+    # Fetch detail page only for relevance candidates — ~50-500 per county vs 11,000+.
     # `force_fetch_detail=True` bypasses the CSV-row pre-filter (used by
-    # refetch-details for tickets already classified GFiber in the DB whose
+    # refetch-details for tickets already classified relevant in the DB whose
     # row fields don't trip `_worth_detail_fetch`).
     detail = None
-    if row.detail_url and (force_fetch_detail or _worth_detail_fetch(row)):
+    if row.detail_url and (force_fetch_detail or _worth_detail_fetch(row, cfg.relevance)):
         try:
             detail = await detail_adapter.fetch(ctx, row.ticket_number, row.county, row.detail_url)
         except Exception as exc:
@@ -217,7 +219,7 @@ async def _process_ticket_row(
     if dry_run:
         click.echo(
             f"    [DRY] {ticket.ticket_number} | score={ticket.relevance_score:.2f} "
-            f"| gfiber={ticket.is_gfiber_related} | status={ticket.status.value}"
+            f"| relevant={ticket.is_relevant} | status={ticket.status.value}"
         )
         stats["new"] += 1
         return
@@ -282,19 +284,19 @@ def _run_grouping(cfg):
     from tn811.models import ORMTicket, TicketStatus, orm_to_normalized
 
     with get_session() as session:
-        active_gfiber = (
+        active_relevant = (
             session.query(ORMTicket)
             .filter(
-                ORMTicket.is_gfiber_related == True,  # noqa: E712
+                ORMTicket.is_relevant == True,  # noqa: E712
                 ORMTicket.status == TicketStatus.ACTIVE.value,
             )
             .all()
         )
-        normalized = [orm_to_normalized(t) for t in active_gfiber]
+        normalized = [orm_to_normalized(t) for t in active_relevant]
         infer_work_groups(normalized, cfg.grouping)
 
         # Write back
-        for orm_t, norm_t in zip(active_gfiber, normalized):
+        for orm_t, norm_t in zip(active_relevant, normalized):
             orm_t.probable_company = norm_t.probable_company
             orm_t.probable_work_group = norm_t.probable_work_group
             orm_t.probable_crew = norm_t.probable_crew
@@ -306,7 +308,7 @@ def _run_grouping(cfg):
 @click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
 @click.option("--dry-run", is_flag=True, help="Write preview to disk instead of sending")
 def remind(config_path: str, dry_run: bool):
-    """Send expiry reminder emails for GFiber tickets expiring in lead_days days."""
+    """Send expiry reminder emails for relevant tickets expiring in lead_days days."""
     cfg = _load_app(config_path)
 
     from tn811.db import get_session
@@ -318,11 +320,11 @@ def remind(config_path: str, dry_run: bool):
     click.echo(f"Reminder check for expiration date: {target} {'[DRY RUN]' if dry_run else ''}")
 
     with get_session() as session:
-        # Load all active GFiber tickets
+        # Load all active relevant tickets
         active = (
             session.query(ORMTicket)
             .filter(
-                ORMTicket.is_gfiber_related == True,  # noqa: E712
+                ORMTicket.is_relevant == True,  # noqa: E712
                 ORMTicket.status == TicketStatus.ACTIVE.value,
             )
             .all()
@@ -626,9 +628,9 @@ def show_config(config_path: str):
 @click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
 @click.option("--status", default=None, help="Filter by status: active|cancelled|expired")
 @click.option("--county", default=None)
-@click.option("--gfiber-only", is_flag=True, default=True)
+@click.option("--relevant-only", is_flag=True, default=True)
 @click.option("--limit", default=50)
-def list_tickets(config_path: str, status: str | None, county: str | None, gfiber_only: bool, limit: int):
+def list_tickets(config_path: str, status: str | None, county: str | None, relevant_only: bool, limit: int):
     """List tickets from the database."""
     cfg = _load_app(config_path)
 
@@ -637,8 +639,8 @@ def list_tickets(config_path: str, status: str | None, county: str | None, gfibe
 
     with get_session() as session:
         q = session.query(ORMTicket)
-        if gfiber_only:
-            q = q.filter(ORMTicket.is_gfiber_related == True)  # noqa: E712
+        if relevant_only:
+            q = q.filter(ORMTicket.is_relevant == True)  # noqa: E712
         if status:
             q = q.filter(ORMTicket.status == status)
         if county:
@@ -681,7 +683,7 @@ def reset_reminders(config_path: str, confirm: bool):
     "--out",
     "out_path",
     default=None,
-    help="Output .kmz path (defaults to <paths.exports_dir>/ervin_ops_snapshot.kmz).",
+    help="Output .kmz path (defaults to <paths.exports_dir>/ops_snapshot.kmz).",
 )
 @click.option(
     "--no-desktop",
@@ -689,7 +691,7 @@ def reset_reminders(config_path: str, confirm: bool):
     help="Skip the Windows desktop mirror for this run.",
 )
 def export_kmz(config_path: str, out_path: str | None, no_desktop: bool):
-    """Write a Google Earth (.kmz) operational view of the GFiber ticket pool."""
+    """Write a Google Earth (.kmz) operational view of the relevant ticket pool."""
     cfg = _load_app(config_path)
 
     from tn811.db import get_session
@@ -723,13 +725,13 @@ def export_kmz(config_path: str, out_path: str | None, no_desktop: bool):
         f"({size_str} on disk)."
     )
     click.echo(
-        f"  Active GFiber:        {manifest.active_gfiber:>5}"
+        f"  Active relevant:        {manifest.active_relevant:>5}"
     )
     click.echo(
-        f"  Cancelled GFiber 14d: {manifest.cancelled_gfiber_14d:>5}"
+        f"  Cancelled relevant 14d: {manifest.cancelled_relevant_14d:>5}"
     )
     click.echo(
-        f"  Ervin non-GFiber:     {manifest.ervin_non_gfiber:>5}"
+        f"  Meridian non-relevant:     {manifest.contractor_other:>5}"
     )
     click.echo(
         f"  Skipped (no coords):  {manifest.skipped_no_coords:>5}"
@@ -775,7 +777,7 @@ def rescore(config_path: str, dry_run: bool):
 
     matcher = RelevanceMatcher(cfg.relevance)
 
-    stats = {"total": 0, "newly_gfiber": 0, "no_longer_gfiber": 0,
+    stats = {"total": 0, "newly_relevant": 0, "no_longer_relevant": 0,
              "score_changed": 0, "unchanged": 0}
     newly_flagged_samples: list[str] = []
 
@@ -784,28 +786,28 @@ def rescore(config_path: str, dry_run: bool):
         for t in tickets:
             stats["total"] += 1
             norm = orm_to_normalized(t)
-            old_flag = bool(t.is_gfiber_related)
+            old_flag = bool(t.is_relevant)
             old_score = float(t.relevance_score or 0.0)
 
             matcher.apply(norm)
 
-            new_flag = norm.is_gfiber_related
+            new_flag = norm.is_relevant
             new_score = norm.relevance_score
             flag_flipped = new_flag != old_flag
             score_moved = abs(new_score - old_score) > 1e-6
 
             if flag_flipped:
                 if new_flag:
-                    stats["newly_gfiber"] += 1
+                    stats["newly_relevant"] += 1
                     if len(newly_flagged_samples) < 5:
                         newly_flagged_samples.append(
                             f"{t.ticket_number}  {t.excavator_name!r} "
                             f"done_for={t.done_for!r} score={new_score:.2f}"
                         )
                 else:
-                    stats["no_longer_gfiber"] += 1
+                    stats["no_longer_relevant"] += 1
                 if not dry_run:
-                    t.is_gfiber_related = new_flag
+                    t.is_relevant = new_flag
                     t.relevance_score = new_score
                     t.relevance_reasons = norm.relevance_reasons
             elif score_moved:
@@ -817,8 +819,8 @@ def rescore(config_path: str, dry_run: bool):
                 stats["unchanged"] += 1
 
     click.echo(f"Rescored {stats['total']:,} ticket(s):")
-    click.echo(f"  +{stats['newly_gfiber']:>5}  newly flagged as GFiber")
-    click.echo(f"  -{stats['no_longer_gfiber']:>5}  no longer flagged as GFiber")
+    click.echo(f"  +{stats['newly_relevant']:>5}  newly flagged as relevant")
+    click.echo(f"  -{stats['no_longer_relevant']:>5}  no longer flagged as relevant")
     click.echo(f"  ~{stats['score_changed']:>5}  score changed (flag same)")
     click.echo(f"  ={stats['unchanged']:>5}  unchanged")
     if newly_flagged_samples:
@@ -835,7 +837,7 @@ def rescore(config_path: str, dry_run: bool):
 @click.option("--config", "config_path", default="config/monitoring.yaml", show_default=True)
 @click.option("--dry-run", is_flag=True, help="Compute matches but don't write to the DB.")
 def match_nashdigs(config_path: str, dry_run: bool):
-    """Spatial-join every GFiber ticket against cached NashDigs packages.
+    """Spatial-join every relevant ticket against cached NashDigs packages.
 
     Assigns `nashdigs_project_name` + confidence tier (high ≤25 m, medium
     25–75 m, low 75–150 m, none >150 m). Run `fetch-nashdigs` first so the
@@ -845,15 +847,15 @@ def match_nashdigs(config_path: str, dry_run: bool):
     cfg = _load_app(config_path)
 
     from tn811.db import get_engine, get_session
-    from tn811.connectors.nashdigs_match import match_all_gfiber_tickets
+    from tn811.connectors.nashdigs_match import match_all_relevant_tickets
 
     # Idempotent migration so older DBs gain the 3 match columns
     _migrate_add_utility_columns(get_engine())
 
     with get_session() as session:
-        stats = match_all_gfiber_tickets(session, dry_run=dry_run)
+        stats = match_all_relevant_tickets(session, dry_run=dry_run)
 
-    click.echo(f"Matched {stats.total:,} GFiber ticket(s):")
+    click.echo(f"Matched {stats.total:,} relevant ticket(s):")
     click.echo(f"  high    (≤25 m):   {stats.high:>5}")
     click.echo(f"  medium  (25-75):   {stats.medium:>5}")
     click.echo(f"  low     (75-150):  {stats.low:>5}")
@@ -938,10 +940,10 @@ def fetch_nashdigs(config_path: str, dry_run: bool, all_owners: bool):
 @click.option("--dry-run", is_flag=True, help="List targets without hitting the portal.")
 def refetch_details(config_path: str, dry_run: bool):
     """
-    Fetch detail pages for GFiber tickets that have no saved HTML snapshot.
+    Fetch detail pages for relevant tickets that have no saved HTML snapshot.
 
     Typical use: you added a new relevance rule, ran `rescore`, and some rows
-    now show is_gfiber_related=True but their detail was never fetched under
+    now show is_relevant=True but their detail was never fetched under
     the older pre-filter. This command downloads the portal's CSV export (to
     resolve the portal-internal ticketId needed for the detail URL), filters
     to only the rows that need detail, fetches those detail pages, and
@@ -960,14 +962,14 @@ def refetch_details(config_path: str, dry_run: bool):
         targets = (
             session.query(ORMTicket.ticket_number, ORMTicket.county)
             .filter(
-                ORMTicket.is_gfiber_related == True,  # noqa: E712
+                ORMTicket.is_relevant == True,  # noqa: E712
                 ORMTicket.source_html_path.is_(None),
             )
             .all()
         )
 
     if not targets:
-        click.echo("No GFiber tickets missing detail — nothing to do.")
+        click.echo("No relevant tickets missing detail — nothing to do.")
         return
 
     by_county: dict[str, set[str]] = {}
@@ -975,7 +977,7 @@ def refetch_details(config_path: str, dry_run: bool):
         by_county.setdefault(county, set()).add(ticket_number)
 
     click.echo(
-        f"Found {len(targets)} GFiber ticket(s) missing detail "
+        f"Found {len(targets)} relevant ticket(s) missing detail "
         f"across {len(by_county)} county(ies):"
     )
     for county_name, nums in sorted(by_county.items()):

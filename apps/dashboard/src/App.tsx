@@ -81,7 +81,7 @@ export default function App() {
               TN811 Monitor
             </h1>
             <p className="text-xs text-gray-400">
-              GFiber-related excavation ticket tracker — Davidson &amp; Rutherford Counties
+              relevant excavation ticket tracker — Davidson &amp; Rutherford Counties
             </p>
           </div>
           <div className="text-right">
@@ -152,7 +152,7 @@ export default function App() {
               <TicketTable
                 tickets={filteredExpiring}
                 title={`Expiring within ${expiring.data.window_days} days`}
-                emptyMessage="No GFiber tickets expiring soon."
+                emptyMessage="No relevant tickets expiring soon."
                 highlightExpiring
               />
             )}
@@ -166,8 +166,8 @@ export default function App() {
             {active.data && (
               <TicketTable
                 tickets={filteredActive}
-                title="Active GFiber-Related Tickets"
-                emptyMessage="No active GFiber tickets found."
+                title="Active Relevant Tickets"
+                emptyMessage="No active relevant tickets found."
               />
             )}
           </>
@@ -196,7 +196,7 @@ export default function App() {
             {changes.data && (
               <TicketTable
                 tickets={filteredChanges}
-                title="Recently Changed GFiber Tickets"
+                title="Recently Changed Relevant Tickets"
                 emptyMessage="No recent changes detected."
               />
             )}
