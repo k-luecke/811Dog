@@ -19,7 +19,7 @@ from tn811.reminders.templates import render_subject, render_plain_text, render_
 def _ticket(
     num: str = "TN20240601-100001",
     expiration: date = date(2099, 1, 1),
-    is_gfiber: bool = True,
+    is_relevant: bool = True,
     status: TicketStatus = TicketStatus.ACTIVE,
     is_cancelled: bool = False,
 ) -> NormalizedTicket:
@@ -27,7 +27,7 @@ def _ticket(
         ticket_number=num,
         county="Davidson County",
         expiration_date=expiration,
-        is_gfiber_related=is_gfiber,
+        is_relevant=is_relevant,
         is_cancelled=is_cancelled,
     )
     # Force status since model_validator will re-derive it
@@ -39,31 +39,31 @@ TARGET = date(2024, 6, 16)
 
 
 class TestIsEligibleForReminder:
-    def test_eligible_gfiber_active_matching_date(self):
-        t = _ticket(expiration=TARGET, is_gfiber=True, status=TicketStatus.ACTIVE)
+    def test_eligible_relevant_active_matching_date(self):
+        t = _ticket(expiration=TARGET, is_relevant=True, status=TicketStatus.ACTIVE)
         assert is_eligible_for_reminder(t, TARGET) is True
 
     def test_not_eligible_wrong_date(self):
-        t = _ticket(expiration=date(2024, 6, 20), is_gfiber=True, status=TicketStatus.ACTIVE)
+        t = _ticket(expiration=date(2024, 6, 20), is_relevant=True, status=TicketStatus.ACTIVE)
         assert is_eligible_for_reminder(t, TARGET) is False
 
-    def test_not_eligible_non_gfiber(self):
-        t = _ticket(expiration=TARGET, is_gfiber=False, status=TicketStatus.ACTIVE)
+    def test_not_eligible_non_relevant(self):
+        t = _ticket(expiration=TARGET, is_relevant=False, status=TicketStatus.ACTIVE)
         assert is_eligible_for_reminder(t, TARGET) is False
 
     def test_not_eligible_cancelled(self):
-        t = _ticket(expiration=TARGET, is_gfiber=True, status=TicketStatus.CANCELLED)
+        t = _ticket(expiration=TARGET, is_relevant=True, status=TicketStatus.CANCELLED)
         assert is_eligible_for_reminder(t, TARGET) is False
 
     def test_not_eligible_expired(self):
-        t = _ticket(expiration=TARGET, is_gfiber=True, status=TicketStatus.EXPIRED)
+        t = _ticket(expiration=TARGET, is_relevant=True, status=TicketStatus.EXPIRED)
         assert is_eligible_for_reminder(t, TARGET) is False
 
     def test_not_eligible_no_expiration(self):
         t = NormalizedTicket(
             ticket_number="TN20240601-999999",
             county="Davidson County",
-            is_gfiber_related=True,
+            is_relevant=True,
         )
         assert is_eligible_for_reminder(t, TARGET) is False
 
@@ -71,10 +71,10 @@ class TestIsEligibleForReminder:
 class TestFilterEligibleTickets:
     def test_filters_correct_tickets(self):
         tickets = [
-            _ticket("TN20240601-100001", expiration=TARGET, is_gfiber=True, status=TicketStatus.ACTIVE),
-            _ticket("TN20240601-100002", expiration=date(2024, 6, 20), is_gfiber=True, status=TicketStatus.ACTIVE),
-            _ticket("TN20240601-100003", expiration=TARGET, is_gfiber=False, status=TicketStatus.ACTIVE),
-            _ticket("TN20240601-100004", expiration=TARGET, is_gfiber=True, status=TicketStatus.CANCELLED),
+            _ticket("TN20240601-100001", expiration=TARGET, is_relevant=True, status=TicketStatus.ACTIVE),
+            _ticket("TN20240601-100002", expiration=date(2024, 6, 20), is_relevant=True, status=TicketStatus.ACTIVE),
+            _ticket("TN20240601-100003", expiration=TARGET, is_relevant=False, status=TicketStatus.ACTIVE),
+            _ticket("TN20240601-100004", expiration=TARGET, is_relevant=True, status=TicketStatus.CANCELLED),
         ]
         eligible = filter_eligible_tickets(tickets, TARGET)
         assert len(eligible) == 1
@@ -85,7 +85,7 @@ class TestFilterEligibleTickets:
 
     def test_all_eligible(self):
         tickets = [
-            _ticket(f"TN20240601-10000{i}", expiration=TARGET, is_gfiber=True, status=TicketStatus.ACTIVE)
+            _ticket(f"TN20240601-10000{i}", expiration=TARGET, is_relevant=True, status=TicketStatus.ACTIVE)
             for i in range(5)
         ]
         eligible = filter_eligible_tickets(tickets, TARGET)
@@ -146,4 +146,6 @@ class TestRenderHtml:
         t = _ticket("<script>alert(1)</script>", expiration=TARGET)
         html = render_html([t], TARGET, 4)
         assert "<script>" not in html
-        assert "&lt;script&gt;" in html
+        # The model upper-cases ticket numbers, so compare case-insensitively —
+        # what matters is that the angle brackets came through escaped.
+        assert "&lt;script&gt;" in html.lower()

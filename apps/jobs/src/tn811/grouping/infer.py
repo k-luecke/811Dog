@@ -1,5 +1,5 @@
 """
-grouping/infer.py — Work-group inference for GFiber-related tickets.
+grouping/infer.py — Work-group inference for relevant tickets.
 
 Infers probable company, work group, and crew from ticket fields using
 text similarity clustering. Does NOT use a hardcoded subcontractor list.
@@ -46,7 +46,7 @@ def normalize_company_name(raw: str | None) -> str | None:
     if not raw:
         return None
     cleaned = _STRIP_SUFFIXES.sub("", raw)
-    cleaned = _WHITESPACE.sub(" ", cleaned).strip().strip(".,;:-").upper()
+    cleaned = _WHITESPACE.sub(" ", cleaned).strip(" .,;:-").upper()
     return cleaned or None
 
 
@@ -103,7 +103,7 @@ def infer_work_groups(
     3. Assign probable_work_group = representative company name of the cluster.
 
     Args:
-        tickets: List of NormalizedTicket objects (GFiber-related or all).
+        tickets: List of NormalizedTicket objects (relevant or all).
         config:  Grouping configuration.
 
     Returns:
