@@ -11,14 +11,18 @@ import yaml
 
 from tn811.config import AppConfig, load_config
 
+# Resolve against the repo root so these pass regardless of pytest's cwd.
+REPO_ROOT = Path(__file__).resolve().parents[3]
+EXAMPLE_CONFIG = str(REPO_ROOT / "config" / "monitoring.yaml.example")
+
 
 class TestLoadConfig:
     def test_loads_example_config(self):
-        cfg = load_config("config/monitoring.yaml.example")
+        cfg = load_config(EXAMPLE_CONFIG)
         assert isinstance(cfg, AppConfig)
 
     def test_active_counties(self):
-        cfg = load_config("config/monitoring.yaml.example")
+        cfg = load_config(EXAMPLE_CONFIG)
         counties = cfg.active_counties
         assert len(counties) >= 2
         names = [c.name for c in counties]
@@ -26,12 +30,12 @@ class TestLoadConfig:
         assert "Rutherford County" in names
 
     def test_relevance_rules_loaded(self):
-        cfg = load_config("config/monitoring.yaml.example")
+        cfg = load_config(EXAMPLE_CONFIG)
         assert len(cfg.relevance.positive_rules) > 0
         assert len(cfg.relevance.negative_rules) > 0
 
     def test_score_threshold(self):
-        cfg = load_config("config/monitoring.yaml.example")
+        cfg = load_config(EXAMPLE_CONFIG)
         assert 0.0 < cfg.relevance.score_threshold < 1.0
 
     def test_missing_config_raises(self, tmp_path):

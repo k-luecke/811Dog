@@ -146,4 +146,6 @@ class TestRenderHtml:
         t = _ticket("<script>alert(1)</script>", expiration=TARGET)
         html = render_html([t], TARGET, 4)
         assert "<script>" not in html
-        assert "&lt;script&gt;" in html
+        # The model upper-cases ticket numbers, so compare case-insensitively —
+        # what matters is that the angle brackets came through escaped.
+        assert "&lt;script&gt;" in html.lower()
