@@ -126,12 +126,20 @@ fixtures, so the suite runs offline with no network access.
 
 | Workflow | Schedule | Purpose |
 |---|---|---|
-| `scrape.yml` | Daily 06:00 CT | Scrape, update DB, rebuild JSON, commit |
+| `scrape.yml` | Twice daily 06:00 / 18:00 CT | Scrape, rebuild JSON, export CSV/KMZ, upload artifacts |
 | `remind.yml` | Daily 08:00 CT | Send expiry reminders |
 | `publish.yml` | Push to `main` | Deploy dashboard to GitHub Pages |
 
-Reminder secrets (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`,
-`REMINDER_TO`) are repository secrets, used only by `remind.yml`.
+Required secret for scrape/remind: `MONITORING_YAML` — the full contents of your
+local `config/monitoring.yaml` (never commit that file; it holds deployment-specific
+relevance rules). CI writes it to disk at job start.
+
+CSV/KMZ delivery in CI is via the `tn811-exports-<run_id>` Actions artifact
+(`data/exports/` plus `data/tn811.db`, 30-day retention). Those paths are
+gitignored on purpose, so the old "commit updated data" step is gone.
+
+Optional reminder secrets (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`,
+`REMINDER_TO`) are used only by `remind.yml`.
 
 ## Data handling
 
