@@ -21,7 +21,7 @@ on:
         default: ""
 
 permissions:
-  contents: write   # needed to commit updated DB and exports
+  contents: read
 
 jobs:
   scrape:
@@ -40,9 +40,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          # Full history so we can commit back
-          fetch-depth: 0
+
+      - name: Materialize monitoring config
+        env:
+          MONITORING_YAML: ${{ secrets.MONITORING_YAML }}
+        run: |
+          if [ -z "${MONITORING_YAML}" ]; then
+            echo "::error::Repository secret MONITORING_YAML is not set. Add the live config/monitoring.yaml contents as that secret (do not commit the file)."
+            exit 1
+          fi
+          python -c 'import os, pathlib; pathlib.Path("config/monitoring.yaml").write_text(os.environ["MONITORING_YAML"], encoding="utf-8")'
+          test -s config/monitoring.yaml
+          echo "Wrote config/monitoring.yaml ($(wc -c < config/monitoring.yaml) bytes)."
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -85,19 +94,32 @@ jobs:
         run: |
           python -m tn811.cli build-json --config config/monitoring.yaml
 
-      - name: Commit updated data
+      - name: Export CSV bundle
         if: ${{ github.event.inputs.dry_run != 'true' }}
         run: |
-          git config user.name "tn811-monitor[bot]"
-          git config user.email "tn811-monitor@users.noreply.github.com"
-          git add data/exports/ data/tn811.db
-          # Only commit if there are changes
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "chore: scrape update $(date -u '+%Y-%m-%d %H:%M UTC')"
-            git push
-          fi
+          python -m tn811.cli export-csv \
+            --config config/monitoring.yaml \
+            --sub-slices \
+            --no-desktop
+
+      - name: Export KMZ
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        continue-on-error: true
+        run: |
+          python -m tn811.cli export-kmz \
+            --config config/monitoring.yaml \
+            --no-desktop
+
+      - name: Upload export artifacts
+        if: ${{ always() && github.event.inputs.dry_run != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tn811-exports-${{ github.run_id }}
+          path: |
+            data/exports/
+            data/tn811.db
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload raw artifacts (for debugging)
         if: always()

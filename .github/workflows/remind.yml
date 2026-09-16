@@ -33,6 +33,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Materialize monitoring config
+        env:
+          MONITORING_YAML: ${{ secrets.MONITORING_YAML }}
+        run: |
+          if [ -z "${MONITORING_YAML}" ]; then
+            echo "::error::Repository secret MONITORING_YAML is not set. Add the live config/monitoring.yaml contents as that secret (do not commit the file)."
+            exit 1
+          fi
+          python -c 'import os, pathlib; pathlib.Path("config/monitoring.yaml").write_text(os.environ["MONITORING_YAML"], encoding="utf-8")'
+          test -s config/monitoring.yaml
+          echo "Wrote config/monitoring.yaml ($(wc -c < config/monitoring.yaml) bytes)."
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
