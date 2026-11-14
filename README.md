@@ -124,6 +124,8 @@ fixtures, so the suite runs offline with no network access.
 
 ## Scheduled workflows
 
+> **Operational status:** Scheduled GitHub Actions runs are paused when no active county campaign is configured. Run locally via `make` or trigger manually with your `MONITORING_YAML` secret.
+
 | Workflow | Schedule | Purpose |
 |---|---|---|
 | `scrape.yml` | Twice daily 06:00 / 18:00 CT | Scrape, rebuild JSON, export CSV/KMZ, upload artifacts |
